@@ -30,7 +30,8 @@ pub fn kur(ctx: &egui::Context) {
             break;
         }
     }
-    f.families.entry(serif()).or_insert_with(|| f.families[&FontFamily::Proportional].clone());
+    let orantili = f.families[&FontFamily::Proportional].clone();
+    f.families.entry(serif()).or_insert(orantili);
     if let Ok(b) = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf") {
         f.font_data.insert("segoe".into(), FontData::from_owned(b));
         f.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, "segoe".into());

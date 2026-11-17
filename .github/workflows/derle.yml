@@ -20,8 +20,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo build --release 2>&1 | tee derleme.log || {
-            grep -E "^(error|warning: unused)" -A6 derleme.log | head -80 | while IFS= read -r l; do echo "::error::$l"; done
+          cargo build --release --color never 2>&1 | tee derleme.log || {
+            grep -E "^error" -A8 derleme.log | head -80 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           }
 

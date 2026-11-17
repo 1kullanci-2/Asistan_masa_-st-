@@ -361,7 +361,9 @@ impl eframe::App for Uygulama {
                     self.sohbet_gorunumu(ui);
                 }
                 Sayfa::Ayarlar => self.ayarlar_sayfasi(ui),
-                Sayfa::YapayZeka => egui::ScrollArea::vertical().show(ui, |ui| self.yapay_zeka_sayfasi(ui)),
+                Sayfa::YapayZeka => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.yapay_zeka_sayfasi(ui));
+                }
             }
         });
         self.pencereler(ctx);
