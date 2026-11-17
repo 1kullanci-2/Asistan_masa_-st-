@@ -1,5 +1,8 @@
 use crate::ai::{self, Olay};
-use crate::ayarlar::{servis_adi, Ayar, SERVISLER};
+use crate::ayarlar::{servis_adi, Ayar, McpAyar, SERVISLER};
+use crate::mcp::Mcp;
+use crate::ses::{Oynatici, GEMINI_SESLER};
+use std::sync::{Arc, Mutex};
 use crate::depo::{self, Mesaj, Sohbet};
 use crate::tema::*;
 use chrono::Timelike;
@@ -11,6 +14,8 @@ enum Sayfa {
     Sohbet,
     Ayarlar,
     YapayZeka,
+    Ses,
+    Baglantilar,
 }
 
 pub struct Uygulama {
@@ -26,6 +31,11 @@ pub struct Uygulama {
     silinecek: Option<String>,
     alt_baslik: &'static str,
     hata: String,
+    araclar: ai::Araclar,
+    oynatici: Arc<Oynatici>,
+    arac_durum: String,
+    mcp_duzen: Option<(Option<usize>, McpAyar)>,
+    sesli_komut: bool,
 }
 
 fn selam() -> &'static str {
@@ -81,7 +91,24 @@ impl Uygulama {
         let ayar = Ayar::yukle();
         let sohbetler = depo::hepsi();
         let aktif = Sohbet::yeni(ayar.varsayilan_model());
-        Self { ayar, sohbetler, aktif, giris: String::new(), yan_acik: false, model_paneli: false, sayfa: Sayfa::Sohbet, rx: None, akan: String::new(), silinecek: None, alt_baslik: alt_baslik_sec(), hata: String::new() }
+        Self { ayar, sohbetler, aktif, giris: String::new(), yan_acik: false, model_paneli: false, sayfa: Sayfa::Sohbet, rx: None, akan: String::new(), silinecek: None, alt_baslik: alt_baslik_sec(), hata: String::new(), araclar: Arc::new(Mutex::new(vec![])), oynatici: Oynatici::yeni(), arac_durum: String::new(), mcp_duzen: None, sesli_komut: false }
+    }
+
+    pub fn baslat(&mut self) {
+        self.mcp_yenile();
+    }
+
+    fn mcp_yenile(&mut self) {
+        let liste: Vec<Mcp> = self.ayar.mcp.iter().map(|m| Mcp::yeni(&m.ad, &m.url, &m.baslik)).collect();
+        let n = liste.len();
+        *self.araclar.lock().unwrap() = liste;
+        let a = self.araclar.clone();
+        std::thread::spawn(move || {
+            for i in 0..n {
+                let mut k = a.lock().unwrap();
+                if let Some(m) = k.get_mut(i) { let _ = m.baglan(); }
+            }
+        });
     }
 
     fn yeni_sohbet(&mut self) {
@@ -114,7 +141,10 @@ impl Uygulama {
         self.rx = Some(rx);
         self.akan.clear();
         let c = ctx.clone();
-        std::thread::spawn(move || ai::akis(&servis, &model, &anahtar, gecmis, tx, move || c.request_repaint()));
+        let araclar = self.araclar.clone();
+        let kapali: Vec<Vec<String>> = self.ayar.mcp.iter().map(|m| m.kapali.clone()).collect();
+        self.arac_durum.clear();
+        std::thread::spawn(move || ai::akis(&servis, &model, &anahtar, gecmis, araclar, kapali, tx, move || c.request_repaint()));
         self.kaydet_aktif();
     }
 
@@ -123,7 +153,11 @@ impl Uygulama {
         let mut bitti = false;
         while let Ok(o) = rx.try_recv() {
             match o {
-                Olay::Parca(t) => self.akan.push_str(&t),
+                Olay::Parca(t) => {
+                    self.arac_durum.clear();
+                    self.akan.push_str(&t);
+                }
+                Olay::Arac(a) => self.arac_durum = a,
                 Olay::Bitti => bitti = true,
                 Olay::Hata(h) => {
                     self.aktif.mesajlar.push(Mesaj { k: "n".into(), m: h });
@@ -138,6 +172,7 @@ impl Uygulama {
                 if let Some(b) = baslik {
                     if self.aktif.baslik == "Yeni sohbet" && !b.is_empty() { self.aktif.baslik = b; }
                 }
+                if !self.ayar.ses_sadece_sesli || self.sesli_komut { self.oynatici.konus(&temiz, &self.ayar); }
                 self.aktif.mesajlar.push(Mesaj { k: "a".into(), m: temiz });
             }
             self.akan.clear();
@@ -152,7 +187,7 @@ impl Uygulama {
             }
             if self.sayfa != Sayfa::Sohbet {
                 if ui.button("‹ Geri").clicked() {
-                    self.sayfa = if self.sayfa == Sayfa::YapayZeka { Sayfa::Ayarlar } else { Sayfa::Sohbet };
+                    self.sayfa = if self.sayfa == Sayfa::Ayarlar { Sayfa::Sohbet } else { Sayfa::Ayarlar };
                 }
             }
         });
@@ -177,7 +212,8 @@ impl Uygulama {
                 if self.akan.is_empty() {
                     let t = ui.input(|i| i.time);
                     let a = (0.55 + 0.45 * (t * 3.0).sin().abs()) as f32;
-                    ui.label(RichText::new("Düşünüyor…").italics().color(KREM.gamma_multiply(a)));
+                    let yazi = if self.arac_durum.is_empty() { "Düşünüyor…".to_string() } else { format!("Araç çalışıyor · {}…", self.arac_durum) };
+                    ui.label(RichText::new(yazi).italics().color(KREM.gamma_multiply(a)));
                     ui.ctx().request_repaint();
                 } else {
                     let (t, _, _) = ai::isaretleri_ayir(&self.akan);
@@ -294,8 +330,142 @@ impl Uygulama {
             let (r, y) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::click());
             ui.painter().rect(r, Rounding::same(14.0), if y.hovered() { YUZEY_ACIK } else { YUZEY }, Stroke::new(1.0, YUZEY_KENAR));
             ui.painter().text(r.left_center() + Vec2::new(16.0, 0.0), Align2::LEFT_CENTER, k, FontId::new(16.0, serif()), METIN_KREM);
-            if y.clicked() && k == "Yapay zeka" { self.sayfa = Sayfa::YapayZeka; }
+            if y.clicked() {
+                match k {
+                    "Yapay zeka" => self.sayfa = Sayfa::YapayZeka,
+                    "Ses" => self.sayfa = Sayfa::Ses,
+                    "Bağlantılar" => self.sayfa = Sayfa::Baglantilar,
+                    _ => {}
+                }
+            }
             ui.add_space(6.0);
+        }
+    }
+
+    fn onizle(&self, motor: &str, ses: Option<&str>) {
+        let mut a = self.ayar.clone();
+        a.ses_sirasi = vec![motor.to_string()];
+        if let Some(s) = ses { a.gemini_ses = s.to_string(); }
+        self.oynatici.konus("Merhaba, ben E.D.I.T.H. Sesim böyle.", &a);
+    }
+
+    fn ses_sayfasi(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Ses").font(FontId::new(26.0, serif())).color(KREM));
+        ui.add_space(8.0);
+        ui.label(RichText::new("Gemini sesleri").strong());
+        let mut sec: Option<String> = None;
+        egui::ScrollArea::horizontal().id_salt("gs").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (i, ad) in GEMINI_SESLER.iter().enumerate() {
+                    let (r, y) = ui.allocate_exact_size(Vec2::splat(84.0), Sense::click());
+                    let secili = self.ayar.gemini_ses == *ad;
+                    let ton = (i as f32 * 37.0) % 360.0;
+                    let renk = egui::ecolor::Hsva::new(ton / 360.0, 0.28, 0.62, 1.0);
+                    ui.painter().rect(r, Rounding::same(14.0), Color32::from(renk), Stroke::new(if secili { 2.5 } else { 1.0 }, if secili { KREM } else { YUZEY_KENAR }));
+                    for b in 0..7 {
+                        let h = 8.0 + (((i * 7 + b * 5) % 9) as f32) * 3.0;
+                        let x = r.left() + 14.0 + b as f32 * 9.5;
+                        ui.painter().line_segment([egui::pos2(x, r.top() + 34.0 - h / 2.0), egui::pos2(x, r.top() + 34.0 + h / 2.0)], Stroke::new(3.0, METIN_KREM));
+                    }
+                    ui.painter().text(egui::pos2(r.center().x, r.bottom() - 14.0), Align2::CENTER_CENTER, ad, FontId::proportional(12.5), METIN_KOYU);
+                    if y.clicked() { sec = Some(ad.to_string()); }
+                }
+            });
+        });
+        if let Some(s) = sec {
+            self.ayar.gemini_ses = s.clone();
+            self.ayar.kaydet();
+            self.onizle("gemini", Some(&s));
+        }
+        ui.add_space(12.0);
+        ui.label(RichText::new("ElevenLabs").strong());
+        let mut d = false;
+        d |= ui.add(egui::TextEdit::singleline(&mut self.ayar.eleven_anahtar).password(true).hint_text("ElevenLabs API anahtarı").desired_width(f32::INFINITY)).changed();
+        d |= ui.add(egui::TextEdit::singleline(&mut self.ayar.eleven_ses).hint_text("Voice ID").desired_width(f32::INFINITY)).changed();
+        d |= ui.add(egui::TextEdit::singleline(&mut self.ayar.eleven_model).hint_text("Model").desired_width(f32::INFINITY)).changed();
+        d |= ui.add(egui::Slider::new(&mut self.ayar.eleven_kararlilik, 0.0..=1.0).text("Kararlılık")).changed();
+        d |= ui.add(egui::Slider::new(&mut self.ayar.eleven_benzerlik, 0.0..=1.0).text("Benzerlik")).changed();
+        if ui.button("ElevenLabs'i dene").clicked() { self.onizle("eleven", None); }
+        ui.add_space(12.0);
+        ui.label(RichText::new("Motor sırası").strong());
+        let n = self.ayar.ses_sirasi.len();
+        let mut tasi: Option<(usize, usize)> = None;
+        for i in 0..n {
+            ui.horizontal(|ui| {
+                let ad = if self.ayar.ses_sirasi[i] == "gemini" { "Gemini" } else { "ElevenLabs" };
+                ui.label(format!("{}. {}", i + 1, ad));
+                if i > 0 && ui.small_button("Yukarı").clicked() { tasi = Some((i, i - 1)); }
+                if i + 1 < n && ui.small_button("Aşağı").clicked() { tasi = Some((i, i + 1)); }
+            });
+        }
+        if let Some((a, b)) = tasi { self.ayar.ses_sirasi.swap(a, b); d = true; }
+        d |= ui.checkbox(&mut self.ayar.ses_sadece_sesli, "Sadece sesli komutlarda sesli cevap ver").changed();
+        if d { self.ayar.kaydet(); }
+    }
+
+    fn baglanti_sayfasi(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Bağlantılar").font(FontId::new(26.0, serif())).color(KREM));
+        ui.label(RichText::new("MCP sunucuları: eklediğin araçları asistan kullanabilir.").size(12.5).color(SOLUK_KREM));
+        ui.add_space(8.0);
+        let mut sil: Option<usize> = None;
+        let mut yeniden = false;
+        let durumlar: Vec<(bool, usize, String)> = match self.araclar.try_lock() {
+            Ok(k) => k.iter().map(|m| (m.bagli, m.araclar.len(), m.hata.clone())).collect(),
+            Err(_) => vec![],
+        };
+        let araclar_adlari: Vec<Vec<String>> = match self.araclar.try_lock() {
+            Ok(k) => k.iter().map(|m| m.araclar.iter().map(|a| a.ad.clone()).collect()).collect(),
+            Err(_) => vec![],
+        };
+        for i in 0..self.ayar.mcp.len() {
+            egui::Frame::none().fill(YUZEY).stroke(Stroke::new(1.0, YUZEY_KENAR)).rounding(Rounding::same(14.0)).inner_margin(Margin::same(10.0)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let (bagli, adet, hata) = durumlar.get(i).cloned().unwrap_or((false, 0, String::new()));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&self.ayar.mcp[i].ad).strong());
+                    let (t, c) = if bagli { (format!("bağlı · {adet} araç"), YESIL_ACIK) } else if hata.is_empty() { ("bağlanıyor…".to_string(), SOLUK_KREM) } else { ("bağlanamadı".to_string(), HATA_ACIK) };
+                    ui.label(RichText::new(t).size(12.0).color(c));
+                });
+                ui.horizontal(|ui| {
+                    if ui.small_button("Düzenle").clicked() { self.mcp_duzen = Some((Some(i), self.ayar.mcp[i].clone())); }
+                    if ui.small_button("Yeniden bağlan").clicked() { yeniden = true; }
+                    if ui.small_button("Sil").clicked() { sil = Some(i); }
+                });
+                if let Some(adlar) = araclar_adlari.get(i) {
+                    egui::CollapsingHeader::new("Araçlar").id_salt(("araclar", i)).show(ui, |ui| {
+                        for a in adlar {
+                            let mut acik = !self.ayar.mcp[i].kapali.contains(a);
+                            if ui.checkbox(&mut acik, a).changed() {
+                                self.ayar.mcp[i].kapali.retain(|x| x != a);
+                                if !acik { self.ayar.mcp[i].kapali.push(a.clone()); }
+                                self.ayar.kaydet();
+                            }
+                        }
+                    });
+                }
+            });
+            ui.add_space(6.0);
+        }
+        if let Some(i) = sil { self.ayar.mcp.remove(i); self.ayar.kaydet(); yeniden = true; }
+        if yeniden { self.mcp_yenile(); }
+        if self.mcp_duzen.is_none() && ui.button("+ Bağlantı ekle").clicked() { self.mcp_duzen = Some((None, McpAyar::default())); }
+        let mut bitir: Option<bool> = None;
+        if let Some((_, m)) = &mut self.mcp_duzen {
+            ui.add_space(6.0);
+            ui.add(egui::TextEdit::singleline(&mut m.ad).hint_text("Ad").desired_width(f32::INFINITY));
+            ui.add(egui::TextEdit::singleline(&mut m.url).hint_text("URL").desired_width(f32::INFINITY));
+            ui.add(egui::TextEdit::singleline(&mut m.baslik).hint_text("Başlık: Authorization: Bearer …").desired_width(f32::INFINITY));
+            ui.horizontal(|ui| {
+                if ui.button("Kaydet").clicked() { bitir = Some(true); }
+                if ui.button("Vazgeç").clicked() { bitir = Some(false); }
+            });
+        }
+        if let Some(kaydet) = bitir {
+            if let (true, Some((idx, m))) = (kaydet, self.mcp_duzen.take()) {
+                match idx { Some(i) => self.ayar.mcp[i] = m, None => self.ayar.mcp.push(m) }
+                self.ayar.kaydet();
+                self.mcp_yenile();
+            } else { self.mcp_duzen = None; }
         }
     }
 
@@ -363,6 +533,12 @@ impl eframe::App for Uygulama {
                 Sayfa::Ayarlar => self.ayarlar_sayfasi(ui),
                 Sayfa::YapayZeka => {
                     egui::ScrollArea::vertical().show(ui, |ui| self.yapay_zeka_sayfasi(ui));
+                }
+                Sayfa::Ses => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.ses_sayfasi(ui));
+                }
+                Sayfa::Baglantilar => {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.baglanti_sayfasi(ui));
                 }
             }
         });

@@ -21,6 +21,22 @@ pub struct Ayar {
     pub mistral_modeller: String,
     pub eleven_anahtar: String,
     pub ses_sadece_sesli: bool,
+    pub gemini_ses: String,
+    pub eleven_ses: String,
+    pub eleven_model: String,
+    pub eleven_kararlilik: f32,
+    pub eleven_benzerlik: f32,
+    pub ses_sirasi: Vec<String>,
+    pub mcp: Vec<McpAyar>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct McpAyar {
+    pub ad: String,
+    pub url: String,
+    pub baslik: String,
+    pub kapali: Vec<String>,
 }
 
 impl Default for Ayar {
@@ -36,6 +52,13 @@ impl Default for Ayar {
             mistral_modeller: "mistral-small-latest".into(),
             eleven_anahtar: String::new(),
             ses_sadece_sesli: true,
+            gemini_ses: "Kore".into(),
+            eleven_ses: String::new(),
+            eleven_model: "eleven_flash_v2_5".into(),
+            eleven_kararlilik: 0.5,
+            eleven_benzerlik: 0.75,
+            ses_sirasi: vec!["gemini".into(), "eleven".into()],
+            mcp: vec![],
         }
     }
 }

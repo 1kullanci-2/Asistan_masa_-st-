@@ -4,6 +4,8 @@ mod ai;
 mod arayuz;
 mod ayarlar;
 mod depo;
+mod mcp;
+mod ses;
 mod tema;
 
 use eframe::egui;
@@ -18,7 +20,9 @@ fn main() -> eframe::Result<()> {
         secenek,
         Box::new(|cc| {
             tema::kur(&cc.egui_ctx);
-            Ok(Box::new(arayuz::Uygulama::yeni()))
+            let mut u = arayuz::Uygulama::yeni();
+            u.baslat();
+            Ok(Box::new(u))
         }),
     )
 }
