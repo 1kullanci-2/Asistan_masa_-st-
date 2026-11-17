@@ -14,8 +14,7 @@ cpal = "0.15"
 rodio = { version = "0.19", default-features = false }
 libloading = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-tray-icon = { version = "0.19", default-features = false }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [profile.release]
 opt-level = 3

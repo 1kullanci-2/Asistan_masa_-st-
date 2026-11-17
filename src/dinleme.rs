@@ -8,6 +8,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub type Bildir = Arc<dyn Fn() + Send + Sync>;
+
 pub const BLOK: usize = 2000; // 125 ms @16 kHz
 
 #[derive(Clone)]
@@ -162,7 +164,7 @@ struct Is {
     ring: VecDeque<i16>,
     ayar: DAyar,
     otx: Sender<DEvent>,
-    ctx: eframe::egui::Context,
+    bildir: Bildir,
     konusuyor: Arc<AtomicBool>,
     ardisik: u32,
     taban: f32,
@@ -183,7 +185,7 @@ unsafe impl Send for Is {}
 impl Is {
     fn g(&self, e: DEvent) {
         let _ = self.otx.send(e);
-        self.ctx.request_repaint();
+        (self.bildir.as_ref())();
     }
 
     fn dinlemeye_gec(&mut self, geri_al: bool) {
@@ -349,13 +351,13 @@ where
         .map_err(|e| format!("Mikrofon açılamadı: {e}"))
 }
 
-pub fn baslat(ctx: eframe::egui::Context, ayar: DAyar, konusuyor: Arc<AtomicBool>) -> Dinleyici {
+pub fn baslat(bildir: Bildir, ayar: DAyar, konusuyor: Arc<AtomicBool>) -> Dinleyici {
     let (ktx, krx) = channel::<DKomut>();
     let (otx, orx) = channel::<DEvent>();
     std::thread::spawn(move || {
         let hata = |m: String| {
             let _ = otx.send(DEvent::Hata(m));
-            ctx.request_repaint();
+            (bildir.as_ref())();
         };
         let v = match Vosk::yukle() { Ok(v) => v, Err(e) => return hata(e) };
         let d = modeller_dizini();
@@ -378,7 +380,7 @@ pub fn baslat(ctx: eframe::egui::Context, ayar: DAyar, konusuyor: Arc<AtomicBool
         if let Err(e) = akis.play() { return hata(format!("Mikrofon başlatılamadı: {e}")); }
 
         let mut is = Is {
-            v, en, tr, mod_: Mod::Bekle, ring: VecDeque::new(), ayar, otx: otx.clone(), ctx: ctx.clone(), konusuyor, ardisik: 0, taban: 0.0, acik: 0,
+            v, en, tr, mod_: Mod::Bekle, ring: VecDeque::new(), ayar, otx: otx.clone(), bildir: bildir.clone(), konusuyor, ardisik: 0, taban: 0.0, acik: 0,
             onbellek: VecDeque::new(), sessiz: 0, konustu: false, parcalar: vec![], son_kismi: String::new(), baslangic: Instant::now(), ogren: None,
             test_en: String::new(), test_tr: String::new(),
         };

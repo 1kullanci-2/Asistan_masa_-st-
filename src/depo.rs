@@ -33,6 +33,9 @@ impl Sohbet {
     }
     pub fn kaydet(&mut self) {
         self.guncelleme = chrono::Local::now().timestamp_millis();
+        self.yaz();
+    }
+    pub fn yaz(&self) {
         if let Ok(s) = serde_json::to_string(self) {
             let _ = std::fs::write(dizin().join(format!("{}.json", self.id)), s);
         }

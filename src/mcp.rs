@@ -111,3 +111,17 @@ pub fn sema_temizle(v: &Value) -> Value {
         _ => v.clone(),
     }
 }
+
+/// Ayardaki bağlantı listesinden yeniden kurar ve arka planda bağlanır.
+pub fn yenile(a: &std::sync::Arc<std::sync::Mutex<Vec<Mcp>>>, liste: &[crate::ayarlar::McpAyar]) {
+    let yeni: Vec<Mcp> = liste.iter().map(|m| Mcp::yeni(&m.ad, &m.url, &m.baslik)).collect();
+    let n = yeni.len();
+    *a.lock().unwrap() = yeni;
+    let a = a.clone();
+    std::thread::spawn(move || {
+        for i in 0..n {
+            let mut k = a.lock().unwrap();
+            if let Some(m) = k.get_mut(i) { let _ = m.baglan(); }
+        }
+    });
+}

@@ -1,5 +1,5 @@
 //! İlk kurulum: Vosk modellerini indirir ve açar.
-use crate::dinleme::{modeller_dizini, EN_MODEL, TR_MODEL};
+use crate::dinleme::{modeller_dizini, Bildir, EN_MODEL, TR_MODEL};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,7 +11,7 @@ pub struct Ilerleme {
     pub hata: Mutex<String>,
 }
 
-fn indir(ad: &str, agirlik: f32, taban: f32, il: &Arc<Ilerleme>, ctx: &eframe::egui::Context) -> Result<(), String> {
+fn indir(ad: &str, agirlik: f32, taban: f32, il: &Arc<Ilerleme>, bildir: &Bildir) -> Result<(), String> {
     let dizin = modeller_dizini();
     if dizin.join(ad).exists() { il.binde.store(((taban + agirlik) * 1000.0) as u32, Ordering::Relaxed); return Ok(()); }
     let y = ureq::get(&format!("https://alphacephei.com/vosk/models/{ad}.zip")).call().map_err(|e| format!("İndirilemedi: {e}"))?;
@@ -27,7 +27,7 @@ fn indir(ad: &str, agirlik: f32, taban: f32, il: &Arc<Ilerleme>, ctx: &eframe::e
         dosya.write_all(&tampon[..n]).map_err(|e| e.to_string())?;
         alinan += n as f32;
         il.binde.store(((taban + agirlik * 0.9 * (alinan / toplam).min(1.0)) * 1000.0) as u32, Ordering::Relaxed);
-        ctx.request_repaint();
+        (bildir.as_ref())();
     }
     drop(dosya);
     let mut zip = zip::ZipArchive::new(std::fs::File::open(&yol).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -45,16 +45,16 @@ fn indir(ad: &str, agirlik: f32, taban: f32, il: &Arc<Ilerleme>, ctx: &eframe::e
     Ok(())
 }
 
-pub fn basla(ctx: eframe::egui::Context) -> Arc<Ilerleme> {
+pub fn basla(bildir: Bildir) -> Arc<Ilerleme> {
     let il = Arc::new(Ilerleme::default());
     let i2 = il.clone();
     std::thread::spawn(move || {
-        let s = indir(TR_MODEL, 0.47, 0.0, &i2, &ctx).and_then(|_| indir(EN_MODEL, 0.5, 0.47, &i2, &ctx));
+        let s = indir(TR_MODEL, 0.47, 0.0, &i2, &bildir).and_then(|_| indir(EN_MODEL, 0.5, 0.47, &i2, &bildir));
         match s {
             Ok(_) => { i2.binde.store(1000, Ordering::Relaxed); i2.bitti.store(true, Ordering::Relaxed); }
             Err(e) => *i2.hata.lock().unwrap() = e,
         }
-        ctx.request_repaint();
+        (bildir.as_ref())();
     });
     il
 }

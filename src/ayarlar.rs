@@ -28,6 +28,16 @@ pub struct Ayar {
     pub eleven_benzerlik: f32,
     pub ses_sirasi: Vec<String>,
     pub mcp: Vec<McpAyar>,
+    pub uyandirma_ekstra: Vec<String>,
+    pub cumle_basi: bool,
+    pub sesle_kes: bool,
+    pub hoparlor_modu: bool,
+    pub soru_sorunca_mikrofon: bool,
+    pub her_cevaptan_sonra: bool,
+    pub takip_s: f32,
+    pub sessizlik_s: f32,
+    pub sessizlik_kapisi: bool,
+    pub ses_sirayla: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -59,6 +69,16 @@ impl Default for Ayar {
             eleven_benzerlik: 0.75,
             ses_sirasi: vec!["gemini".into(), "eleven".into()],
             mcp: vec![],
+            uyandirma_ekstra: vec![],
+            cumle_basi: false,
+            sesle_kes: true,
+            hoparlor_modu: false,
+            soru_sorunca_mikrofon: true,
+            her_cevaptan_sonra: false,
+            takip_s: 8.0,
+            sessizlik_s: 1.2,
+            sessizlik_kapisi: true,
+            ses_sirayla: true,
         }
     }
 }
@@ -102,6 +122,17 @@ impl Ayar {
             }
         }
         v
+    }
+    pub fn dinleme_ayari(&self) -> crate::dinleme::DAyar {
+        crate::dinleme::DAyar {
+            ekstra: self.uyandirma_ekstra.clone(),
+            cumle_basi: self.cumle_basi,
+            sesle_kes: self.sesle_kes,
+            hoparlor: self.hoparlor_modu,
+            takip_s: self.takip_s,
+            sessizlik_s: self.sessizlik_s,
+            kapi: self.sessizlik_kapisi,
+        }
     }
     pub fn varsayilan_model(&self) -> String {
         self.secenekler().into_iter().next().unwrap_or_default()
