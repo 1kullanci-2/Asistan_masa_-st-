@@ -1,0 +1,55 @@
+name: Windows derle
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  derle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Derle
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo build --release 2>&1 | tee derleme.log || {
+            grep -E "^(error|warning: unused)" -A6 derleme.log | head -80 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+
+      - name: Vosk kütüphanesini indir
+        shell: bash
+        run: |
+          curl -L -o vosk.zip https://github.com/alphacep/vosk-api/releases/download/v0.3.45/vosk-win64-0.3.45.zip
+          7z x vosk.zip -ovosk -y > /dev/null
+          mkdir -p dist
+          cp target/release/edith.exe dist/
+          cp vosk/*/*.dll dist/
+
+      - name: Paketle
+        shell: bash
+        run: |
+          cd dist
+          7z a ../edith-windows.zip . > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: edith-windows
+          path: edith-windows.zip
+
+      - name: Sürüm olarak yayınla
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete son-surum --cleanup-tag -y || true
+          gh release create son-surum edith-windows.zip \
+            --title "Son sürüm" --notes "Sürüm: 0.4.${GITHUB_RUN_NUMBER} · Otomatik derleme: ${{ github.sha }}" --prerelease
