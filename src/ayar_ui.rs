@@ -456,7 +456,7 @@ impl AyarUyg {
             let d1 = dinleme::modeller_dizini();
             let tr = d1.join(dinleme::TR_MODEL).exists();
             let en = d1.join(dinleme::EN_MODEL).exists();
-            let dll = std::env::current_exe().ok().and_then(|p| p.parent().map(|x| x.join("libvosk.dll").exists())).unwrap_or(false);
+            let dll = true;
             let isaret = |b: bool| if b { "hazır" } else { "yok" };
             alt_yazi(ui, &format!("Türkçe: {} · İngilizce: {} · Vosk kütüphanesi: {}", isaret(tr), isaret(en), isaret(dll)));
             if !(tr && en) && self.kurulum.is_none() && dugme(ui, "İndir", true).clicked() {

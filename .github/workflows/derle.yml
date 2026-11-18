@@ -16,6 +16,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Vosk kütüphanesini indir ve exe'ye gömmek için paketle
+        shell: bash
+        run: |
+          curl -L -o vosk.zip https://github.com/alphacep/vosk-api/releases/download/v0.3.45/vosk-win64-0.3.45.zip
+          7z x vosk.zip -ovosk -y > /dev/null
+          mkdir -p vendor
+          (cd vosk/vosk-win64-0.3.45 && 7z a -tzip ../../vendor/vosk.zip libvosk.dll libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll > /dev/null)
+
       - name: Derle
         shell: bash
         run: |
@@ -25,20 +33,13 @@ jobs:
             exit 1
           }
 
-      - name: Vosk kütüphanesini indir
-        shell: bash
-        run: |
-          curl -L -o vosk.zip https://github.com/alphacep/vosk-api/releases/download/v0.3.45/vosk-win64-0.3.45.zip
-          7z x vosk.zip -ovosk -y > /dev/null
-          mkdir -p dist
-          cp target/release/edith.exe dist/
-          cp vosk/*/*.dll dist/
-
       - name: Paketle
         shell: bash
         run: |
+          mkdir -p dist
+          cp target/release/edith.exe dist/
           cd dist
-          7z a ../edith-windows.zip . > /dev/null
+          7z a ../edith-windows.zip edith.exe > /dev/null
 
       - uses: actions/upload-artifact@v4
         with:
@@ -51,5 +52,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete son-surum --cleanup-tag -y || true
-          gh release create son-surum edith-windows.zip \
+          gh release create son-surum edith-windows.zip dist/edith.exe \
             --title "Son sürüm" --notes "Sürüm: 0.4.${GITHUB_RUN_NUMBER} · Otomatik derleme: ${{ github.sha }}" --prerelease

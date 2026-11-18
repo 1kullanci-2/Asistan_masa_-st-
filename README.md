@@ -4,7 +4,7 @@ Rust ile yazılmış sesli asistan. Sohbet terminalde, ayarlar ayrı bir pencere
 
 ## Nasıl alınır
 `main` dalına her gönderimde GitHub Actions Windows için derler. Bitince **Releases → Son sürüm** altındaki
-`edith-windows.zip` dosyasını indirip bir klasöre çıkar, `edith.exe` ile başlat (klasördeki DLL'ler yanında kalsın).
+`edith.exe` dosyasını (ya da zip'ini) indirip çift tıklayarak başlat. Tek dosyadır; konuşma motoru içine gömülüdür.
 
 ## Komutlar
 - `ayarlar` — ayarlar penceresi

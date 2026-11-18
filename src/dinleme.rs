@@ -77,8 +77,7 @@ struct Vosk {
 
 impl Vosk {
     fn yukle() -> Result<Self, String> {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let yol = exe.parent().map(|p| p.join("libvosk.dll")).ok_or("yol yok")?;
+        let yol = crate::gomulu::vosk_yolu()?;
         unsafe {
             let lib = Library::new(&yol).map_err(|e| format!("libvosk.dll yüklenemedi: {e}"))?;
             macro_rules! al {
@@ -124,24 +123,39 @@ impl Vosk {
 }
 
 // ---------- Uyandırma eşleştirme ----------
-const ONEKLER: [&str; 9] = ["hey", "a", "the", "uh", "oh", "and", "hi", "um", "hay"];
-const TEMEL: [&str; 6] = ["edit", "edith", "edits", "edid", "edict", "ed"];
+const ONEKLER: [&str; 6] = ["a", "the", "uh", "oh", "and", "hi"];
+const TEMEL: [&str; 4] = ["edit", "edith", "edits", "hey"];
+const VARYASYON: [&str; 6] = ["hey edit", "hey edith", "hey edits", "edit", "edith", "edits"];
+const TR_ARTIK: [&str; 10] = ["hey", "hay", "ey", "edit", "edith", "edici", "edi", "edis", "idit", "adit"];
 
-fn uyandirma_var(metin: &str, ekstra: &[String], cumle_basi: bool) -> bool {
-    let kucuk = metin.to_lowercase();
-    let tok: Vec<&str> = kucuk.split_whitespace().collect();
-    for (i, t) in tok.iter().enumerate() {
-        let eslesti = (TEMEL.contains(t) && *t != "ed" && *t != "edict") || ekstra.iter().any(|e| e == t);
-        if eslesti && (!cumle_basi || tok[..i].iter().all(|x| ONEKLER.contains(x))) { return true; }
-    }
-    ekstra.iter().any(|e| e.contains(' ') && kucuk.contains(e.as_str()))
+fn varyasyonlar(ekstra: &[String]) -> Vec<Vec<String>> {
+    let mut v: Vec<Vec<String>> = VARYASYON.iter().map(|x| x.split_whitespace().map(String::from).collect()).collect();
+    for e in ekstra { v.push(e.split_whitespace().map(String::from).collect()); }
+    v.sort_by_key(|x| std::cmp::Reverse(x.len()));
+    v
 }
 
-/// Türkçe sonuçtan baştaki uyandırma artıklarını atar.
-fn artik_temizle(m: &str) -> String {
-    const ATILACAK: [&str; 10] = ["hey", "hay", "ey", "edit", "edith", "edici", "edit'i", "ediz", "edid", "heyedit"];
+/// Uyandırma kelimesi bulunursa, ondan sonra kalan kelime sayısı.
+fn uyandirma_ara(metin: &str, ekstra: &[String], basta: bool) -> Option<usize> {
+    let m = metin.to_lowercase().replace("[unk]", " ");
+    let tok: Vec<&str> = m.split_whitespace().collect();
+    for v in varyasyonlar(ekstra) {
+        if v.is_empty() || v.len() > tok.len() { continue; }
+        for i in 0..=(tok.len() - v.len()) {
+            if basta && !(i == 0 || (i == 1 && ONEKLER.contains(&tok[0]))) { continue; }
+            if tok[i..i + v.len()].iter().zip(&v).all(|(a, b)| *a == b.as_str()) { return Some(tok.len() - i - v.len()); }
+        }
+    }
+    None
+}
+
+/// Türkçe sonuçtan baştaki uyandırma artıklarını atar (en çok 2 kelime).
+fn artik_temizle(m: &str, ekstra: &[String]) -> String {
+    let mut atilacak: Vec<String> = TR_ARTIK.iter().map(|s| s.to_string()).collect();
+    for v in varyasyonlar(ekstra) { for t in v { if t.chars().count() > 2 { atilacak.push(t); } } }
     let mut t: Vec<&str> = m.split_whitespace().collect();
-    while t.first().map(|x| ATILACAK.contains(&x.to_lowercase().as_str())).unwrap_or(false) { t.remove(0); }
+    let mut n = 0;
+    while n < 2 && t.first().map(|x| atilacak.contains(&x.to_lowercase())).unwrap_or(false) { t.remove(0); n += 1; }
     t.join(" ")
 }
 
@@ -161,7 +175,9 @@ struct Is {
     en: Ptr,
     tr: Ptr,
     mod_: Mod,
-    ring: VecDeque<i16>,
+    ring: VecDeque<(u64, Vec<i16>)>,
+    no: u64,
+    ilk: u64,
     ayar: DAyar,
     otx: Sender<DEvent>,
     bildir: Bildir,
@@ -188,7 +204,7 @@ impl Is {
         (self.bildir.as_ref())();
     }
 
-    fn dinlemeye_gec(&mut self, geri_al: bool) {
+    fn dinlemeye_gec(&mut self, ilk: Option<u64>) {
         self.v.sifirla(self.tr);
         self.parcalar.clear();
         self.son_kismi.clear();
@@ -198,10 +214,10 @@ impl Is {
         self.onbellek.clear();
         self.baslangic = Instant::now();
         self.mod_ = Mod::Dinle;
-        if geri_al {
-            let v: Vec<i16> = self.ring.iter().copied().collect();
-            for p in v.chunks(4000) {
-                if self.v.kabul(self.tr, p) { let s = self.v.sonuc(self.tr); if !s.is_empty() { self.parcalar.push(s); } }
+        if let Some(ilk) = ilk {
+            let v: Vec<Vec<i16>> = self.ring.iter().filter(|(n, _)| *n >= ilk).map(|(_, b)| b.clone()).collect();
+            for p in v {
+                if self.v.kabul(self.tr, &p) { let s = self.v.sonuc(self.tr); if !s.is_empty() { self.parcalar.push(s); } }
             }
             let t = self.metin();
             if !t.is_empty() { self.konustu = true; self.g(DEvent::Kismi(t)); }
@@ -211,7 +227,7 @@ impl Is {
     fn metin(&self) -> String {
         let mut t = self.parcalar.join(" ");
         if !self.son_kismi.is_empty() { t.push(' '); t.push_str(&self.son_kismi); }
-        artik_temizle(t.trim())
+        artik_temizle(t.trim(), &self.ayar.ekstra)
     }
 
     fn blok(&mut self, b: &[i16]) {
@@ -219,8 +235,9 @@ impl Is {
         self.g(DEvent::Seviye((r / 4000.0).min(1.0)));
         if r < self.taban * 1.5 || self.taban == 0.0 { self.taban = self.taban * 0.98 + r * 0.02; }
         let esik = (self.taban * 2.4).max(170.0);
-        self.ring.extend(b.iter().copied());
-        while self.ring.len() > 80000 { self.ring.pop_front(); }
+        self.no += 1;
+        self.ring.push_back((self.no, b.to_vec()));
+        while self.ring.len() > 40 { self.ring.pop_front(); }
         match self.mod_ {
             Mod::Bekle => self.bekle(b),
             Mod::Dinle => self.dinle(b, r > esik),
@@ -244,15 +261,24 @@ impl Is {
             }
             return;
         }
-        if !uyandirma_var(&metin, &self.ayar.ekstra, self.ayar.cumle_basi) { self.ardisik = 0; return; }
-        self.ardisik += 1;
         let caliyor = self.konusuyor.load(Ordering::Relaxed);
-        if caliyor && (!self.ayar.sesle_kes || (self.ayar.hoparlor && !son)) { return; }
-        if son || self.ardisik >= 3 {
+        if caliyor && !self.ayar.sesle_kes { self.ardisik = 0; return; }
+        let bulundu = uyandirma_ara(&metin, &self.ayar.ekstra, self.ayar.cumle_basi);
+        let (tetik, ilk) = if caliyor && self.ayar.hoparlor {
+            (son && matches!(bulundu, Some(k) if k <= 1), self.no)
+        } else if bulundu.is_some() {
+            if self.ardisik == 0 { self.ilk = self.no; }
+            self.ardisik += 1;
+            (son || self.ardisik >= 3, self.ilk)
+        } else {
+            self.ardisik = 0;
+            (false, 0)
+        };
+        if tetik {
             self.ardisik = 0;
             self.v.sifirla(self.en);
             self.g(DEvent::Uyandi);
-            self.dinlemeye_gec(true);
+            self.dinlemeye_gec(Some(ilk));
         }
     }
 
@@ -324,8 +350,24 @@ where
     use cpal::traits::DeviceTrait;
     use cpal::Sample;
     let kanal = yap.channels as usize;
-    let adim = yap.sample_rate.0 as f64 / 16000.0;
-    let (mut toplam, mut n, mut faz) = (0f32, 0f32, 0f64);
+    let fs = yap.sample_rate.0 as f64;
+    let adim = fs / 16000.0;
+    let filtre = fs > 16500.0;
+    const N: usize = 63;
+    let fc = 7200.0 / fs;
+    let pi = std::f64::consts::PI;
+    let mut taps: Vec<f32> = (0..N)
+        .map(|k| {
+            let x = k as f64 - (N as f64 - 1.0) / 2.0;
+            let s = if x == 0.0 { 2.0 * fc } else { (2.0 * pi * fc * x).sin() / (pi * x) };
+            (s * (0.54 - 0.46 * (2.0 * pi * k as f64 / (N as f64 - 1.0)).cos())) as f32
+        })
+        .collect();
+    let toplam_t: f32 = taps.iter().sum();
+    taps.iter_mut().for_each(|t| *t /= toplam_t);
+    let mut gecmis = [0f32; N];
+    let mut konum = 0usize;
+    let mut faz = 0f64;
     cihaz
         .build_input_stream(
             yap,
@@ -333,14 +375,13 @@ where
                 let mut cikis = Vec::with_capacity(veri.len() / kanal / 2 + 1);
                 for kare in veri.chunks(kanal) {
                     let m: f32 = kare.iter().map(|s| f32::from_sample(*s)).sum::<f32>() / kanal as f32;
-                    toplam += m;
-                    n += 1.0;
+                    gecmis[konum] = m;
+                    konum = (konum + 1) % N;
                     faz += 1.0;
                     if faz >= adim {
-                        cikis.push(((toplam / n) * 32767.0).clamp(-32768.0, 32767.0) as i16);
-                        toplam = 0.0;
-                        n = 0.0;
                         faz -= adim;
+                        let y = if filtre { (0..N).map(|k| taps[k] * gecmis[(konum + N - 1 - k) % N]).sum::<f32>() } else { m };
+                        cikis.push((y * 32767.0).clamp(-32768.0, 32767.0) as i16);
                     }
                 }
                 if !cikis.is_empty() { let _ = tx.send(cikis); }
@@ -380,7 +421,7 @@ pub fn baslat(bildir: Bildir, ayar: DAyar, konusuyor: Arc<AtomicBool>) -> Dinley
         if let Err(e) = akis.play() { return hata(format!("Mikrofon başlatılamadı: {e}")); }
 
         let mut is = Is {
-            v, en, tr, mod_: Mod::Bekle, ring: VecDeque::new(), ayar, otx: otx.clone(), bildir: bildir.clone(), konusuyor, ardisik: 0, taban: 0.0, acik: 0,
+            v, en, tr, mod_: Mod::Bekle, ring: VecDeque::new(), no: 0, ilk: 0, ayar, otx: otx.clone(), bildir: bildir.clone(), konusuyor, ardisik: 0, taban: 0.0, acik: 0,
             onbellek: VecDeque::new(), sessiz: 0, konustu: false, parcalar: vec![], son_kismi: String::new(), baslangic: Instant::now(), ogren: None,
             test_en: String::new(), test_tr: String::new(),
         };
@@ -389,7 +430,7 @@ pub fn baslat(bildir: Bildir, ayar: DAyar, konusuyor: Arc<AtomicBool>) -> Dinley
         loop {
             while let Ok(k) = krx.try_recv() {
                 match k {
-                    DKomut::Dinle => is.dinlemeye_gec(false),
+                    DKomut::Dinle => is.dinlemeye_gec(None),
                     DKomut::Bekle => { is.mod_ = Mod::Bekle; is.v.sifirla(is.en); }
                     DKomut::Test(a) => {
                         if a { is.v.sifirla(is.en); is.v.sifirla(is.tr); is.test_en.clear(); is.test_tr.clear(); is.mod_ = Mod::Test; } else { is.mod_ = Mod::Bekle; }

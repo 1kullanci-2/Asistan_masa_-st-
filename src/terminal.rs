@@ -45,23 +45,21 @@ fn yaz(s: &str) {
 }
 
 fn banner() {
-    const E: [&str; 5] = ["█████", "█    ", "████ ", "█    ", "█████"];
-    const D: [&str; 5] = ["████ ", "█   █", "█   █", "█   █", "████ "];
-    const I: [&str; 5] = ["███", " █ ", " █ ", " █ ", "███"];
-    const T: [&str; 5] = ["█████", "  █  ", "  █  ", "  █  ", "  █  "];
-    const H: [&str; 5] = ["█   █", "█   █", "█████", "█   █", "█   █"];
-    const N: [&str; 5] = [" ", " ", " ", " ", "█"];
-    let renk = [215, 214, 209, 208, 203];
+    // ANSI Shadow harfleri: E . D . I . T . H
+    const E: [&str; 6] = ["███████╗", "██╔════╝", "█████╗  ", "██╔══╝  ", "███████╗", "╚══════╝"];
+    const D: [&str; 6] = ["██████╗ ", "██╔══██╗", "██║  ██║", "██║  ██║", "██████╔╝", "╚═════╝ "];
+    const N: [&str; 6] = ["   ", "   ", "   ", "   ", "██╗", "╚═╝"];
+    const I: [&str; 6] = ["██╗", "██║", "██║", "██║", "██║", "╚═╝"];
+    const T: [&str; 6] = ["████████╗", "╚══██╔══╝", "   ██║   ", "   ██║   ", "   ██║   ", "   ╚═╝   "];
+    const H: [&str; 6] = ["██╗  ██╗", "██║  ██║", "███████║", "██╔══██║", "██║  ██║", "╚═╝  ╚═╝"];
+    let renk = [202, 208, 209, 214, 215, 221];
     println!();
-    for r in 0..5 {
+    for r in 0..6 {
         let mut s = String::from("  ");
-        for (k, g) in [E, N, D, N, I, N, T, N, H].iter().enumerate() {
-            s.push_str(g[r]);
-            if k < 8 { s.push(' '); }
-        }
+        for g in [E, N, D, N, I, N, T, N, H] { s.push_str(g[r]); }
         println!("\x1b[38;5;{}m{s}{SIFIRLA}", renk[r]);
     }
-    println!("\n  {GRI}ayarlar · /model · /history_chat · /yeni · /yardim · çıkış{SIFIRLA}\n");
+    println!("\n  {GRI}sesli asistan  ·  'hey edit' de  ·  ayarlar  ·  /model  ·  /history_chat  ·  çıkış{SIFIRLA}\n");
 }
 
 enum Girdi {

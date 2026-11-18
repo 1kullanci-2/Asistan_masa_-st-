@@ -3,6 +3,7 @@ mod ayar_ui;
 mod ayarlar;
 mod depo;
 mod dinleme;
+mod gomulu;
 mod guncelleme;
 mod kurulum;
 mod mcp;
