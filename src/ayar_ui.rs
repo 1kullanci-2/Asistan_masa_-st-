@@ -122,6 +122,58 @@ fn ses_kartlari(ui: &mut Ui, kimlik: &str, ogeler: &[(String, String)], secili: 
     sec
 }
 
+fn kategori_ikonu(p: &egui::Painter, i: usize, c: egui::Pos2) {
+    let s = Stroke::new(1.8, KREM);
+    let n = |x: f32, y: f32| egui::pos2(c.x + x, c.y + y);
+    match i {
+        0 => p.add(egui::Shape::closed_line(vec![n(0.0, -10.0), n(3.0, -3.0), n(10.0, 0.0), n(3.0, 3.0), n(0.0, 10.0), n(-3.0, 3.0), n(-10.0, 0.0), n(-3.0, -3.0)], s)),
+        1 => {
+            for (k, h) in [4.0f32, 9.0, 6.0, 10.0, 5.0].iter().enumerate() {
+                let x = -8.0 + k as f32 * 4.0;
+                p.line_segment([n(x, -h), n(x, *h)], s);
+            }
+            return;
+        }
+        2 => {
+            p.circle_stroke(c, 3.0, s);
+            p.circle_stroke(c, 9.0, Stroke::new(1.4, KREM.gamma_multiply(0.75)));
+            return;
+        }
+        3 => {
+            p.rect_stroke(egui::Rect::from_center_size(n(0.0, -3.0), Vec2::new(8.0, 13.0)), Rounding::same(4.0), s);
+            p.line_segment([n(-6.0, 1.0), n(-6.0, 3.0)], s);
+            p.line_segment([n(6.0, 1.0), n(6.0, 3.0)], s);
+            p.line_segment([n(-6.0, 3.0), n(6.0, 3.0)], s);
+            p.line_segment([n(0.0, 3.0), n(0.0, 9.0)], s);
+            return;
+        }
+        4 => {
+            p.circle_stroke(n(-4.0, 0.0), 6.0, s);
+            p.circle_stroke(n(4.0, 0.0), 6.0, s);
+            return;
+        }
+        5 => {
+            p.rect_stroke(egui::Rect::from_center_size(n(0.0, -1.0), Vec2::new(19.0, 14.0)), Rounding::same(5.0), s);
+            p.line_segment([n(-5.0, -3.0), n(5.0, -3.0)], s);
+            p.line_segment([n(-5.0, 1.0), n(2.0, 1.0)], s);
+            return;
+        }
+        6 => {
+            p.rect_stroke(egui::Rect::from_center_size(c, Vec2::new(16.0, 16.0)), Rounding::same(5.0), s);
+            p.line_segment([n(-4.0, 0.0), n(-1.0, 3.5)], s);
+            p.line_segment([n(-1.0, 3.5), n(5.0, -3.5)], s);
+            return;
+        }
+        _ => {
+            p.line_segment([n(0.0, -9.0), n(0.0, 4.0)], s);
+            p.line_segment([n(-5.0, -1.0), n(0.0, 4.0)], s);
+            p.line_segment([n(5.0, -1.0), n(0.0, 4.0)], s);
+            p.line_segment([n(-8.0, 9.0), n(8.0, 9.0)], s);
+            return;
+        }
+    };
+}
+
 struct Getir<T> {
     kutu: Arc<Mutex<Option<Result<T, String>>>>,
     bekliyor: bool,
@@ -415,6 +467,19 @@ impl AyarUyg {
             if !self.dinle_hata.is_empty() { alt_yazi(ui, &self.dinle_hata); }
         });
         kart(ui, |ui| {
+            baslik(ui, "Kısayol");
+            d |= satir_anahtar(ui, "Kısayolla dinle", "Bu tuşa basınca uyandırma kelimesi beklemeden dinlemeye geçer. Terminal açıkken her yerde çalışır; tekrar basınca iptal eder.", &mut self.ayar.kisayol_acik);
+            ui.horizontal(|ui| {
+                ui.label("Tuş");
+                egui::ComboBox::from_id_salt("ks").selected_text(self.ayar.kisayol.clone()).show_ui(ui, |ui| {
+                    for k in ["Ctrl+Alt+E", "Ctrl+Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+M", "F8", "F9"] {
+                        if ui.selectable_value(&mut self.ayar.kisayol, k.to_string(), k).changed() { d = true; }
+                    }
+                });
+            });
+            alt_yazi(ui, "Değişiklik ayarlar kapanınca geçerli olur.");
+        });
+        kart(ui, |ui| {
             d |= satir_anahtar(ui, "Cümle başında olsun", "Kelime yalnızca cümlenin başında duyulursa uyan.", &mut self.ayar.cumle_basi);
             d |= satir_anahtar(ui, "Sesle kes", "Asistan konuşurken uyandırma kelimesi onu susturur.", &mut self.ayar.sesle_kes);
             d |= satir_anahtar(ui, "Hoparlör modu", "Asistan konuşurken yalnızca tam algılanan kelimeyle uyan (yankıyı azaltır).", &mut self.ayar.hoparlor_modu);
@@ -651,11 +716,19 @@ impl AyarUyg {
     }
 
     fn kategori_karti(&mut self, ui: &mut Ui, i: usize) -> bool {
-        let (r, y) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 58.0), Sense::click());
+        let (r, y) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), Sense::click());
         let sec = self.sayfa == i;
-        ui.painter().rect(r, Rounding::same(16.0), if sec { YUZEY_ACIK } else if y.hovered() { YUZEY_ACIK.gamma_multiply(0.85) } else { YUZEY }, Stroke::new(if sec { 1.6 } else { 1.0 }, if sec { KREM } else { YUZEY_KENAR }));
-        ui.painter().text(r.left_top() + Vec2::new(16.0, 11.0), Align2::LEFT_TOP, KATEGORILER[i].0, FontId::new(16.5, serif()), METIN_KREM);
-        ui.painter().text(r.left_top() + Vec2::new(16.0, 34.0), Align2::LEFT_TOP, KATEGORILER[i].1, FontId::proportional(12.0), SOLUK_KREM);
+        let t = ui.ctx().animate_bool_with_time(y.id, y.hovered() || sec, 0.14);
+        let dolgu = if sec { YUZEY_ACIK } else { YUZEY.lerp_to_gamma(YUZEY_ACIK, t * 0.8) };
+        ui.painter().rect(r, Rounding::same(18.0), dolgu, Stroke::new(if sec { 1.6 } else { 1.0 }, if sec { KREM } else { YUZEY_KENAR }));
+        if sec {
+            ui.painter().rect_filled(egui::Rect::from_min_size(r.left_top() + Vec2::new(0.0, 16.0), Vec2::new(4.0, r.height() - 32.0)), Rounding::same(2.0), KREM);
+        }
+        let ic = r.left_center() + Vec2::new(34.0, 0.0);
+        ui.painter().circle(ic, 20.0, VISNE_KOYU, Stroke::new(1.0, YUZEY_KENAR));
+        kategori_ikonu(ui.painter(), i, ic);
+        ui.painter().text(r.left_top() + Vec2::new(66.0, 14.0), Align2::LEFT_TOP, KATEGORILER[i].0, FontId::new(16.5, serif()), METIN_KREM);
+        ui.painter().text(r.left_top() + Vec2::new(66.0, 38.0), Align2::LEFT_TOP, KATEGORILER[i].1, FontId::proportional(12.0), SOLUK_KREM);
         ui.add_space(6.0);
         y.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
     }

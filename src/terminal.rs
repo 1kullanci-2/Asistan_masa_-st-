@@ -8,6 +8,7 @@ use crate::{guncelleme, kurulum, mcp};
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -50,19 +51,22 @@ fn banner() {
     const D: [&str; 6] = ["██████╗ ", "██╔══██╗", "██║  ██║", "██║  ██║", "██████╔╝", "╚═════╝ "];
     const N: [&str; 6] = ["   ", "   ", "   ", "   ", "██╗", "╚═╝"];
     const I: [&str; 6] = ["██╗", "██║", "██║", "██║", "██║", "╚═╝"];
-    const T: [&str; 6] = ["████████╗", "╚══██╔══╝", "   ██║   ", "   ██║   ", "   ██║   ", "   ╚═╝   "];
+    // T: noktalar T'nin boşluklarına yerleştirildi, aralarında boşluk yok
+    const T: [&str; 6] = ["████████╗", "╚══██╔══╝", "   ██║   ", "   ██║   ", "██╗██║██╗", "╚═╝╚═╝╚═╝"];
+    const B: [&str; 6] = [" ", " ", " ", " ", " ", " "];
     const H: [&str; 6] = ["██╗  ██╗", "██║  ██║", "███████║", "██╔══██║", "██║  ██║", "╚═╝  ╚═╝"];
     let renk = [202, 208, 209, 214, 215, 221];
     println!();
     for r in 0..6 {
         let mut s = String::from("  ");
-        for g in [E, N, D, N, I, N, T, N, H] { s.push_str(g[r]); }
+        for g in [E, N, D, N, I, B, T, B, H] { s.push_str(g[r]); }
         println!("\x1b[38;5;{}m{s}{SIFIRLA}", renk[r]);
     }
-    println!("\n  {GRI}sesli asistan  ·  'hey edit' de  ·  ayarlar  ·  /model  ·  /history_chat  ·  çıkış{SIFIRLA}\n");
+    println!("\n  {GRI}sesli asistan  ·  'hey edit' de  ·  komutlar için /yardim  ·  model için /model{SIFIRLA}\n");
 }
 
 enum Girdi {
+    Kisayol,
     Satir(String),
     Ai(Olay),
     Din(DEvent),
@@ -92,6 +96,7 @@ struct T {
     kare: usize,
     kuyruk: VecDeque<String>,
     cocuk: Option<std::process::Child>,
+    kisayol_tid: Arc<AtomicU32>,
 }
 
 fn ayar_komutu_mu(m: &str) -> bool {
@@ -118,11 +123,55 @@ impl T {
 
     fn yeni(&mut self) {
         self.aktif = Sohbet::yeni(self.ayar.varsayilan_model());
-        self.not(&format!("Yeni sohbet · {}", self.model_adi()));
+        self.ekrani_temizle();
+        println!("  {GRI}Yeni sohbet · {}{SIFIRLA}\n", self.model_adi());
     }
 
     fn yardim(&self) {
-        yaz(&format!("{SIL}{GRI}  ayarlar          ayarlar penceresini açar\n  /model           modelleri numaralı listeler\n  /history_chat    eski sohbetleri numaralı listeler\n  /yeni            yeni sohbet\n  çıkış            kapatır\n  sesle: \"hey edit\" / \"edit\" deyip konuş{SIFIRLA}\n"));
+        yaz(&format!("{SIL}{GRI}  /ayarlar         ayarlar penceresini açar\n  /model           modelleri numaralı listeler\n  /history_chat    eski sohbetleri numaralı listeler\n  /yeni            yeni sohbet\n  /yardim          bu liste\n  /cikis           kapatır\n  sesle: \"hey edit\" / \"edit\" deyip konuş{SIFIRLA}\n"));
+    }
+
+    fn ekrani_temizle(&self) {
+        yaz("\x1b[2J\x1b[3J\x1b[H");
+        banner();
+    }
+
+    fn sohbeti_yaz(&self) {
+        println!("  {GRI}{} · {}{SIFIRLA}\n", self.aktif.baslik, self.model_adi());
+        for m in &self.aktif.mesajlar {
+            match m.k.as_str() {
+                "k" => println!("{MAVI}› {}{SIFIRLA}\n", m.m),
+                "n" => println!("{GRI}{}{SIFIRLA}\n", m.m),
+                _ => println!("{TURUNCU}{}{SIFIRLA}\n", m.m),
+            }
+        }
+    }
+
+    fn kisayol_yenile(&mut self) {
+        #[cfg(windows)]
+        {
+            let eski = self.kisayol_tid.swap(0, Ordering::SeqCst);
+            if eski != 0 { unsafe { kisayol::PostThreadMessageW(eski, 0x0012, 0, 0); } }
+            if self.ayar.kisayol_acik {
+                kisayol::baslat(&self.ayar.kisayol, self.gtx.clone(), self.kisayol_tid.clone());
+            }
+        }
+    }
+
+    fn kisayol_basildi(&mut self) {
+        let Some(d) = &self.dinleyici else { self.not("Dinleme kapalı, kısayol çalışmaz."); self.istem(); return };
+        if self.dinliyor {
+            let _ = d.komut.send(DKomut::Bekle);
+            self.dinliyor = false;
+            yaz(SIL);
+            self.istem();
+        } else {
+            self.oynatici.kes();
+            self.sonra_dinle = false;
+            let _ = d.komut.send(DKomut::Dinle);
+            self.dinliyor = true;
+            yaz(&format!("{SIL}{YESIL}Dinleniyor{SIFIRLA}"));
+        }
     }
 
     fn ayar_ac(&mut self) {
@@ -155,13 +204,14 @@ impl T {
             }
         }
         if !self.ayar.secenekler().contains(&self.aktif.model) && self.aktif.mesajlar.is_empty() { self.aktif.model = self.ayar.varsayilan_model(); }
+        self.kisayol_yenile();
         self.not("Ayarlar kaydedildi.");
         self.istem();
     }
 
     fn model_listele(&mut self) {
         let sec = self.ayar.secenekler();
-        if sec.is_empty() { self.not("Henüz API anahtarı yok. `ayarlar` > Yapay zeka bölümünden ekle."); return; }
+        if sec.is_empty() { self.not("Henüz API anahtarı yok. `/ayarlar` > Yapay zeka bölümünden ekle."); return; }
         yaz(&format!("{SIL}"));
         for (i, s) in sec.iter().enumerate() {
             let (sv, m) = s.split_once('|').unwrap_or(("", ""));
@@ -190,22 +240,18 @@ impl T {
         match self.liste.take() {
             Some(Liste::Model(v)) => {
                 self.aktif.model = v[n - 1].clone();
-                if !self.aktif.mesajlar.is_empty() { self.aktif.kaydet(); }
-                self.not(&format!("Bu sohbetin modeli: {}", self.model_adi()));
+                let n = format!("Model değişti: {}", self.model_adi());
+                if !self.aktif.mesajlar.is_empty() {
+                    self.aktif.mesajlar.push(Mesaj { k: "n".into(), m: n.clone() });
+                    self.aktif.kaydet();
+                }
+                self.not(&n);
             }
             Some(Liste::Sohbet(v)) => {
-                if let Some(s) = depo::hepsi().into_iter().find(|s| s.id == v[n - 1]) {
-                    self.aktif = s;
-                    yaz(SIL);
-                    println!("  {GRI}{} · {}{SIFIRLA}\n", self.aktif.baslik, self.model_adi());
-                    let bas = self.aktif.mesajlar.len().saturating_sub(6);
-                    for m in &self.aktif.mesajlar[bas..] {
-                        match m.k.as_str() {
-                            "k" => println!("{MAVI}› {}{SIFIRLA}\n", m.m),
-                            "n" => println!("{GRI}{}{SIFIRLA}\n", m.m),
-                            _ => println!("{TURUNCU}{}{SIFIRLA}\n", m.m),
-                        }
-                    }
+                if let Some(c) = depo::hepsi().into_iter().find(|c| c.id == v[n - 1]) {
+                    self.aktif = c;
+                    self.ekrani_temizle();
+                    self.sohbeti_yaz();
                 }
             }
             None => {}
@@ -223,22 +269,26 @@ impl T {
         }
         if self.mesgul { self.kuyruk.push_back(s); return; }
         let k = s.to_lowercase();
-        match k.as_str() {
-            "" => {}
-            "çıkış" | "cikis" | "exit" | "/exit" | "/cikis" => { std::process::exit(0); }
-            "/model" => self.model_listele(),
-            "/history_chat" => self.sohbet_listele(),
-            "/yeni" => self.yeni(),
-            "/yardim" | "/yardım" | "/help" => self.yardim(),
-            _ if k == "/ayarlar" || ayar_komutu_mu(&k) => self.ayar_ac(),
-            _ => { self.gonder(&s, false); return; }
+        if k.starts_with('/') {
+            match k.as_str() {
+                "/cikis" | "/çıkış" | "/exit" | "/q" => std::process::exit(0),
+                "/model" => self.model_listele(),
+                "/history_chat" => self.sohbet_listele(),
+                "/yeni" => self.yeni(),
+                "/yardim" | "/yardım" | "/help" => self.yardim(),
+                "/ayarlar" => self.ayar_ac(),
+                _ => self.not("Bilinmeyen komut. Komutlar için /yardim"),
+            }
+            self.istem();
+            return;
         }
-        self.istem();
+        if s.is_empty() { self.istem(); return; }
+        self.gonder(&s, false);
     }
 
     fn gonder(&mut self, metin: &str, sesli: bool) {
         let Some((servis, model)) = self.aktif.model.split_once('|').map(|(a, b)| (a.to_string(), b.to_string())) else {
-            self.not("Önce `ayarlar` > Yapay zeka bölümünden bir API anahtarı ekle.");
+            self.not("Önce `/ayarlar` > Yapay zeka bölümünden bir API anahtarı ekle.");
             self.istem();
             return;
         };
@@ -361,6 +411,66 @@ fn kurulum_yap() {
     }
 }
 
+#[cfg(windows)]
+mod kisayol {
+    use super::Girdi;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::mpsc::Sender;
+    use std::sync::Arc;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct Msg {
+        hwnd: isize,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+        time: u32,
+        x: i32,
+        y: i32,
+    }
+    extern "system" {
+        fn RegisterHotKey(h: isize, id: i32, mods: u32, vk: u32) -> i32;
+        fn UnregisterHotKey(h: isize, id: i32) -> i32;
+        fn GetMessageW(m: *mut Msg, h: isize, a: u32, b: u32) -> i32;
+        pub fn PostThreadMessageW(tid: u32, msg: u32, w: usize, l: isize) -> i32;
+        fn GetCurrentThreadId() -> u32;
+    }
+
+    fn coz(s: &str) -> Option<(u32, u32)> {
+        let (mut mods, mut vk) = (0u32, 0u32);
+        for p in s.split('+').map(|x| x.trim().to_lowercase()) {
+            match p.as_str() {
+                "ctrl" => mods |= 2,
+                "alt" => mods |= 1,
+                "shift" => mods |= 4,
+                "win" => mods |= 8,
+                "space" => vk = 0x20,
+                x if x.len() == 1 && x.as_bytes()[0].is_ascii_alphanumeric() => vk = x.to_uppercase().as_bytes()[0] as u32,
+                x if x.starts_with('f') => vk = 0x70 + x[1..].parse::<u32>().ok()?.checked_sub(1)?,
+                _ => return None,
+            }
+        }
+        if vk == 0 { None } else { Some((mods, vk)) }
+    }
+
+    pub fn baslat(spec: &str, gtx: Sender<Girdi>, tid: Arc<AtomicU32>) {
+        let Some((mods, vk)) = coz(spec) else { return };
+        std::thread::spawn(move || unsafe {
+            tid.store(GetCurrentThreadId(), Ordering::SeqCst);
+            if RegisterHotKey(0, 1, mods | 0x4000, vk) == 0 {
+                let _ = gtx.send(Girdi::Satir("\u{1}kisayolhata".into()));
+                return;
+            }
+            let mut m = Msg::default();
+            while GetMessageW(&mut m, 0, 0, 0) > 0 {
+                if m.message == 0x0312 { let _ = gtx.send(Girdi::Kisayol); }
+            }
+            UnregisterHotKey(0, 1);
+        });
+    }
+}
+
 pub fn calistir() {
     vt_ac();
     yaz("\x1b]0;E.D.I.T.H\x07");
@@ -377,7 +487,7 @@ pub fn calistir() {
     } else { None };
     let mut t = T {
         aktif: Sohbet::yeni(ayar.varsayilan_model()), ayar, gtx: gtx.clone(), araclar, oynatici, dinleyici, liste: None, mesgul: false, akan: String::new(), arac: String::new(),
-        hata: false, sesli: false, sonra_dinle: false, dinliyor: false, kare: 0, kuyruk: VecDeque::new(), cocuk: None,
+        hata: false, sesli: false, sonra_dinle: false, dinliyor: false, kare: 0, kuyruk: VecDeque::new(), cocuk: None, kisayol_tid: Arc::new(AtomicU32::new(0)),
     };
     // Dinleyici olaylarını ana döngüye ilet.
     if let Some(d) = t.dinleyici.take() {
@@ -402,16 +512,21 @@ pub fn calistir() {
         }
         let _ = g4.send(Girdi::Kapat);
     });
-    if t.ayar.secenekler().is_empty() { t.not("Başlamak için `ayarlar` yaz ve Yapay zeka bölümüne bir API anahtarı ekle."); }
+    if t.ayar.secenekler().is_empty() { t.not("Başlamak için `/ayarlar` yaz ve Yapay zeka bölümüne bir API anahtarı ekle."); }
+    t.kisayol_yenile();
     t.istem();
     loop {
         match grx.recv_timeout(Duration::from_millis(100)) {
             Ok(Girdi::Satir(s)) => {
-                if let Some(n) = s.strip_prefix("\u{1}yeni:") {
-                    t.not(&format!("Yeni sürüm var (0.4.{n}). `ayarlar` > Güncelleme bölümünden yükleyebilirsin."));
+                if s == "\u{1}kisayolhata" {
+                    t.not("Kısayol tuşu başka bir uygulamada kullanılıyor; Ayarlar > Uyandırma'dan değiştir.");
+                    t.istem();
+                } else if let Some(n) = s.strip_prefix("\u{1}yeni:") {
+                    t.not(&format!("Yeni sürüm var (0.4.{n}). `/ayarlar` > Güncelleme bölümünden yükleyebilirsin."));
                     t.istem();
                 } else { t.satir(&s); }
             }
+            Ok(Girdi::Kisayol) => t.kisayol_basildi(),
             Ok(Girdi::Ai(o)) => t.ai_olay(o),
             Ok(Girdi::Din(e)) => t.dinle_olay(e),
             Ok(Girdi::Kapat) => break,

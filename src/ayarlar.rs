@@ -38,6 +38,8 @@ pub struct Ayar {
     pub sessizlik_s: f32,
     pub sessizlik_kapisi: bool,
     pub ses_sirayla: bool,
+    pub kisayol_acik: bool,
+    pub kisayol: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -79,6 +81,8 @@ impl Default for Ayar {
             sessizlik_s: 1.2,
             sessizlik_kapisi: true,
             ses_sirayla: true,
+            kisayol_acik: true,
+            kisayol: "Ctrl+Alt+E".into(),
         }
     }
 }
