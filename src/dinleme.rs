@@ -65,6 +65,7 @@ pub fn modeller_hazir() -> bool {
 type Ptr = *mut c_void;
 struct Vosk {
     _lib: Library,
+    _dep: Vec<Library>,
     model_new: unsafe extern "C" fn(*const c_char) -> Ptr,
     rec_new: unsafe extern "C" fn(Ptr, f32) -> Ptr,
     accept: unsafe extern "C" fn(Ptr, *const i16, i32) -> i32,
@@ -75,11 +76,25 @@ struct Vosk {
     log: unsafe extern "C" fn(i32),
 }
 
+#[cfg(windows)]
+unsafe fn ac(yol: &std::path::Path) -> Result<Library, String> {
+    libloading::os::windows::Library::load_with_flags(yol, libloading::os::windows::LOAD_WITH_ALTERED_SEARCH_PATH).map(Library::from).map_err(|e| e.to_string())
+}
+#[cfg(not(windows))]
+unsafe fn ac(yol: &std::path::Path) -> Result<Library, String> {
+    Library::new(yol).map_err(|e| e.to_string())
+}
+
 impl Vosk {
     fn yukle() -> Result<Self, String> {
         let yol = crate::gomulu::vosk_yolu()?;
         unsafe {
-            let lib = Library::new(&yol).map_err(|e| format!("libvosk.dll yüklenemedi: {e}"))?;
+            let dizin = yol.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+            let mut dep = vec![];
+            for d in ["libwinpthread-1.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll"] {
+                match ac(&dizin.join(d)) { Ok(l) => dep.push(l), Err(e) => return Err(format!("{d} yüklenemedi: {e}")) }
+            }
+            let lib = ac(&yol).map_err(|e| format!("libvosk.dll yüklenemedi: {e}"))?;
             macro_rules! al {
                 ($ad:literal) => {
                     *lib.get(concat!($ad, "\0").as_bytes()).map_err(|e| format!("{}: {e}", $ad))?
@@ -95,6 +110,7 @@ impl Vosk {
                 reset: al!("vosk_recognizer_reset"),
                 log: al!("vosk_set_log_level"),
                 _lib: lib,
+                _dep: dep,
             };
             (v.log)(-1);
             Ok(v)
