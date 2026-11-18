@@ -27,7 +27,7 @@ fn main() -> eframe::Result<()> {
     if std::env::args().any(|a| a == "--ayarlar") {
         konsolu_birak();
         let secenek = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 640.0]).with_min_inner_size([420.0, 360.0]).with_title("E.D.I.T.H — Ayarlar"),
+            viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 640.0]).with_min_inner_size([420.0, 360.0]).with_title("E.D.I.T.H — Ayarlar").with_icon(egui::IconData { rgba: include_bytes!("../assets/icon_256.rgba").to_vec(), width: 256, height: 256 }),
             ..Default::default()
         };
         return eframe::run_native(
