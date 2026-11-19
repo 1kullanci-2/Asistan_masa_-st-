@@ -17,12 +17,13 @@ pub struct Mcp {
     pub araclar: Vec<Arac>,
     pub bagli: bool,
     pub hata: String,
+    pub son: std::time::Instant,
     sayac: u64,
 }
 
 impl Mcp {
     pub fn yeni(ad: &str, url: &str, baslik: &str) -> Self {
-        Self { ad: ad.into(), url: url.into(), baslik: baslik.into(), oturum: None, araclar: vec![], bagli: false, hata: String::new(), sayac: 0 }
+        Self { ad: ad.into(), url: url.into(), baslik: baslik.into(), oturum: None, araclar: vec![], bagli: false, hata: String::new(), son: std::time::Instant::now(), sayac: 0 }
     }
 
     fn rpc(&mut self, yontem: &str, params: Value, bildirim: bool) -> Result<Value, String> {
@@ -57,6 +58,7 @@ impl Mcp {
 
     pub fn baglan(&mut self) -> Result<(), String> {
         self.oturum = None;
+        self.son = std::time::Instant::now();
         let r = self.rpc("initialize", json!({"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "EDITH", "version": "0.4"}}), false);
         if let Err(e) = r { self.bagli = false; self.hata = e.clone(); return Err(e); }
         let _ = self.rpc("notifications/initialized", json!({}), true);
@@ -112,16 +114,38 @@ pub fn sema_temizle(v: &Value) -> Value {
     }
 }
 
-/// Ayardaki bağlantı listesinden yeniden kurar ve arka planda bağlanır.
+/// Ayardaki bağlantı listesinden yeniden kurar ve arka planda bağlanır (kilidi ağ beklerken tutmaz).
 pub fn yenile(a: &std::sync::Arc<std::sync::Mutex<Vec<Mcp>>>, liste: &[crate::ayarlar::McpAyar]) {
     let yeni: Vec<Mcp> = liste.iter().map(|m| Mcp::yeni(&m.ad, &m.url, &m.baslik)).collect();
-    let n = yeni.len();
     *a.lock().unwrap() = yeni;
-    let a = a.clone();
+    for i in 0..liste.len() { yenile_bir(a.clone(), i, liste[i].ad.clone(), liste[i].url.clone(), liste[i].baslik.clone()); }
+}
+
+fn yenile_bir(a: std::sync::Arc<std::sync::Mutex<Vec<Mcp>>>, i: usize, ad: String, url: String, baslik: String) {
     std::thread::spawn(move || {
-        for i in 0..n {
+        let mut m = Mcp::yeni(&ad, &url, &baslik);
+        let _ = m.baglan();
+        let mut k = a.lock().unwrap();
+        if let Some(h) = k.get_mut(i) { if h.url == m.url && h.baslik == m.baslik { *h = m; } }
+    });
+}
+
+/// Bağlıları 10 dakikada, kopukları 20 saniyede bir yeniler.
+pub fn bekci(a: std::sync::Arc<std::sync::Mutex<Vec<Mcp>>>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let vadesi: Vec<(usize, String, String, String)> = {
             let mut k = a.lock().unwrap();
-            if let Some(m) = k.get_mut(i) { let _ = m.baglan(); }
-        }
+            let mut v = vec![];
+            for (i, m) in k.iter_mut().enumerate() {
+                let yas = m.son.elapsed().as_secs();
+                if (!m.bagli && yas >= 20) || (m.bagli && yas >= 600) {
+                    m.son = std::time::Instant::now();
+                    v.push((i, m.ad.clone(), m.url.clone(), m.baslik.clone()));
+                }
+            }
+            v
+        };
+        for (i, ad, url, b) in vadesi { yenile_bir(a.clone(), i, ad, url, b); }
     });
 }

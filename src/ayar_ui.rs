@@ -1,4 +1,5 @@
 //! Ayarlar penceresi (mobil ayarlarla aynı tasarım, yatay/yeniden boyutlanır).
+use crate::ai;
 use crate::ayarlar::{servis_adi, Ayar, McpAyar, SERVISLER};
 use crate::dinleme::{self, DEvent, DKomut, Dinleyici};
 use crate::kurulum::{self, Ilerleme};
@@ -7,6 +8,8 @@ use crate::ses::{self, Oynatici, GEMINI_SESLER};
 use crate::tema::*;
 use crate::{depo, guncelleme};
 use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Margin, RichText, Rounding, Sense, Stroke, Ui, Vec2};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 const KATEGORILER: [(&str, &str); 8] = [
@@ -237,6 +240,21 @@ pub struct AyarUyg {
     kontrol: Getir<Option<(u32, String)>>,
     kur: Getir<()>,
     ctx: egui::Context,
+    ai_servis: Option<usize>,
+    mgetir: Vec<Getir<Vec<String>>>,
+    dene: HashMap<String, Getir<String>>,
+    ai_not: String,
+    ogren_hedef: usize,
+    ks_yakala: bool,
+    ks_aday: String,
+    ks_not: String,
+    gor: Option<depo::Sohbet>,
+    kur_il: Arc<AtomicU32>,
+}
+
+fn tus_adi(k: egui::Key) -> Option<String> {
+    let n = k.name();
+    if (n.len() == 1 && n.chars().all(|c| c.is_ascii_alphanumeric())) || n == "Space" || (n.starts_with('F') && n[1..].parse::<u32>().is_ok()) { Some(n.to_string()) } else { None }
 }
 
 impl AyarUyg {
@@ -250,12 +268,14 @@ impl AyarUyg {
         let ayar = Ayar::yukle();
         let araclar: crate::ai::Araclar = Arc::new(Mutex::new(vec![]));
         crate::mcp::yenile(&araclar, &ayar.mcp);
+        crate::mcp::bekci(araclar.clone());
         Self {
             ayar, sayfa: 0, sayfa_acik: false, gizli: [false; 5], ses_sekme: 0, oynatici: Oynatici::yeni(),
             el_sesler: Getir::yeni(), el_modeller: Getir::yeni(), el_kredi: Getir::yeni(), araclar, mcp_duzen: None, mcp_test: Getir::yeni(),
             sohbetler: depo::hepsi(), ad_duzen: None, sil_onay: None, dinleyici: None, dinleyici_denendi: false, dinle_hata: String::new(), dinle_hazir: false,
             seviye: 0.0, test_acik: false, test_en: String::new(), test_tr: String::new(), ogren_acik: false, ogren_n: 0, kurulum: None,
-            kontrol: Getir::yeni(), kur: Getir::yeni(), ctx: ctx.clone(),
+            kontrol: Getir::yeni(), kur: Getir::yeni(), ctx: ctx.clone(), ai_servis: None, mgetir: (0..4).map(|_| Getir::yeni()).collect(), dene: HashMap::new(), ai_not: String::new(),
+            ogren_hedef: 0, ks_yakala: false, ks_aday: String::new(), ks_not: String::new(), gor: None, kur_il: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -282,7 +302,8 @@ impl AyarUyg {
                 DEvent::TestMetin(a, b) => { self.test_en = a; self.test_tr = b; }
                 DEvent::Ogrenme(n) => self.ogren_n = n,
                 DEvent::Ogrenildi(v) => {
-                    for x in v { if !self.ayar.uyandirma_ekstra.contains(&x) { self.ayar.uyandirma_ekstra.push(x); } }
+                    let hedef = if self.ogren_hedef == 0 { &mut self.ayar.ekstra_hey } else { &mut self.ayar.ekstra_edit };
+                    for x in v { if !hedef.contains(&x) { hedef.push(x); } }
                     self.ogren_acik = false;
                     self.kaydet();
                 }
@@ -300,34 +321,90 @@ impl AyarUyg {
 
     // ---------- sayfalar ----------
     fn yapay_zeka(&mut self, ui: &mut Ui) {
-        sayfa_basligi(ui, "Yapay zeka", "Anahtarlar yalnızca bu bilgisayarda saklanır. Her servis için en fazla 2 model, virgülle ayır.");
-        let mut d = false;
+        if let Some(i) = self.ai_servis { return self.servis_sayfasi(ui, i); }
+        sayfa_basligi(ui, "Yapay zeka", "Bir servis seç; anahtarını gir, modellerini getir ve tek tek dene.");
         for (i, s) in SERVISLER.iter().enumerate() {
+            let (r, y) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 74.0), Sense::click());
+            let t = ui.ctx().animate_bool_with_time(y.id, y.hovered(), 0.14);
+            ui.painter().rect(r, Rounding::same(18.0), YUZEY.lerp_to_gamma(YUZEY_ACIK, t * 0.8), Stroke::new(1.0, YUZEY_KENAR));
             let var = !self.ayar.anahtar(s).trim().is_empty();
-            kart(ui, |ui| {
-                ui.horizontal(|ui| {
-                    baslik(ui, servis_adi(s));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(RichText::new(if var { "anahtar var" } else { "anahtar yok" }).size(12.5).color(if var { YESIL_ACIK } else { SOLUK_KREM }));
-                    });
-                });
-                let (a, m) = match *s {
-                    "gemini" => (&mut self.ayar.gemini_anahtar, &mut self.ayar.gemini_modeller),
-                    "groq" => (&mut self.ayar.groq_anahtar, &mut self.ayar.groq_modeller),
-                    "cerebras" => (&mut self.ayar.cerebras_anahtar, &mut self.ayar.cerebras_modeller),
-                    _ => (&mut self.ayar.mistral_anahtar, &mut self.ayar.mistral_modeller),
-                };
-                ui.horizontal(|ui| {
-                    let gizli = !self.gizli[i];
-                    ui.scope(|ui| {
-                        ui.set_width(ui.available_width() - 76.0);
-                        d |= metin_alani(ui, a, "API anahtarı", gizli);
-                    });
-                    if dugme(ui, if gizli { "Göster" } else { "Gizle" }, false).clicked() { self.gizli[i] = !self.gizli[i]; }
-                });
-                d |= metin_alani(ui, m, "Modeller (virgülle, en fazla 2)", false);
-            });
+            ui.painter().text(r.left_top() + Vec2::new(20.0, 14.0), Align2::LEFT_TOP, servis_adi(s), FontId::new(19.0, serif()), METIN_KREM);
+            let alt = if var { format!("anahtar var · {}", self.ayar.modeller(s).join("  ·  ")) } else { "anahtar yok".to_string() };
+            ui.painter().text(r.left_top() + Vec2::new(20.0, 44.0), Align2::LEFT_TOP, alt, FontId::proportional(12.5), if var { YESIL_ACIK } else { SOLUK_KREM });
+            ui.painter().text(r.right_center() - Vec2::new(20.0, 0.0), Align2::RIGHT_CENTER, "›", FontId::proportional(26.0), SOLUK_KREM);
+            if y.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { self.ai_servis = Some(i); }
+            ui.add_space(8.0);
         }
+    }
+
+    fn servis_sayfasi(&mut self, ui: &mut Ui, i: usize) {
+        let s = SERVISLER[i];
+        if dugme(ui, "‹ Yapay zeka", false).clicked() { self.ai_servis = None; return; }
+        ui.add_space(6.0);
+        sayfa_basligi(ui, servis_adi(s), "Anahtarı gir, modelleri getir. En fazla 2 model seçilir; yeni sohbet ilk seçili modelle başlar.");
+        for g in self.dene.values_mut() { g.yokla(); }
+        self.mgetir[i].yokla();
+        let mut d = false;
+        kart(ui, |ui| {
+            baslik(ui, "API anahtarı");
+            ui.horizontal(|ui| {
+                let gizli = !self.gizli[i];
+                ui.scope(|ui| {
+                    ui.set_width(ui.available_width() - 90.0);
+                    d |= metin_alani(ui, self.ayar.anahtar_mut(s), "API anahtarı", gizli);
+                });
+                if dugme(ui, if gizli { "Göster" } else { "Gizle" }, false).clicked() { self.gizli[i] = !self.gizli[i]; }
+            });
+        });
+        let anahtar_metni = self.ayar.anahtar(s).to_string();
+        let mut secili = self.ayar.modeller(s);
+        let mut m_degisti = false;
+        kart(ui, |ui| {
+            ui.horizontal(|ui| {
+                baslik(ui, "Modeller");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if dugme(ui, "Modelleri getir", true).clicked() && !anahtar_metni.trim().is_empty() {
+                        let (k, sv) = (anahtar_metni.clone(), s.to_string());
+                        self.mgetir[i].baslat(&self.ctx, move || ai::model_listesi(&sv, &k));
+                    }
+                });
+            });
+            if self.mgetir[i].bekliyor { alt_yazi(ui, "Getiriliyor…"); }
+            if !self.mgetir[i].hata.is_empty() { ui.label(RichText::new(format!("Alınamadı: {}", self.mgetir[i].hata.chars().take(120).collect::<String>())).size(12.5).color(HATA_ACIK)); }
+            if !self.ai_not.is_empty() { alt_yazi(ui, &self.ai_not.clone()); }
+            let mut liste = secili.clone();
+            if let Some(v) = &self.mgetir[i].veri { for m in v { if !liste.contains(m) { liste.push(m.clone()); } } }
+            if liste.is_empty() { alt_yazi(ui, "Anahtarı girip \"Modelleri getir\"e bas."); }
+            egui::ScrollArea::vertical().max_height(420.0).id_salt(("ml", i)).show(ui, |ui| {
+                for m in liste {
+                    ui.horizontal(|ui| {
+                        let mut var = secili.contains(&m);
+                        if anahtar(ui, &mut var) {
+                            if var && secili.len() >= 2 { self.ai_not = "En fazla 2 model seçilebilir; önce birini kapat.".into(); }
+                            else {
+                                self.ai_not.clear();
+                                if var { secili.push(m.clone()); } else { secili.retain(|x| *x != m); }
+                                m_degisti = true;
+                            }
+                        }
+                        ui.label(RichText::new(&m).size(14.5));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let anahtar_k = format!("{s}|{m}");
+                            let g = self.dene.entry(anahtar_k).or_insert_with(Getir::yeni);
+                            if dugme(ui, "Dene", false).clicked() && !anahtar_metni.trim().is_empty() {
+                                g.veri = None;
+                                let (sv, mm, k) = (s.to_string(), m.clone(), anahtar_metni.clone());
+                                g.baslat(&self.ctx, move || ai::dene(&sv, &mm, &k));
+                            }
+                            if g.bekliyor { ui.label(RichText::new("deneniyor…").size(12.0).color(SOLUK_KREM)); }
+                            else if let Some(v) = &g.veri { ui.label(RichText::new(v).size(12.0).color(YESIL_ACIK)); }
+                            else if !g.hata.is_empty() { ui.label(RichText::new(g.hata.chars().take(70).collect::<String>()).size(12.0).color(HATA_ACIK)); }
+                        });
+                    });
+                }
+            });
+        });
+        if m_degisti { self.ayar.modeller_yaz(s, &secili); d = true; }
         if d { self.kaydet(); }
     }
 
@@ -415,6 +492,10 @@ impl AyarUyg {
                 ui.horizontal(|ui| {
                     let m = self.ayar.ses_sirasi[i].clone();
                     ui.label(RichText::new(format!("{}. {}", i + 1, if m == "gemini" { "Gemini" } else { "ElevenLabs" })).size(15.0));
+                    {
+                        let acik = if m == "gemini" { &mut self.ayar.gemini_ses_acik } else { &mut self.ayar.eleven_ses_acik };
+                        d |= anahtar(ui, acik);
+                    }
                     if dugme(ui, "Dene", false).clicked() { self.onizle(&m); }
                     if i > 0 && dugme(ui, "Yukarı", false).clicked() { tasi = Some((i, i - 1)); }
                     if i + 1 < n && dugme(ui, "Aşağı", false).clicked() { tasi = Some((i, i + 1)); }
@@ -450,34 +531,61 @@ impl AyarUyg {
             alt_yazi(ui, "Telaffuz varyasyonları arka planda tutulur.");
         });
         kart(ui, |ui| {
-            baslik(ui, "Öğrenme");
-            alt_yazi(ui, "Öğren'e basıp uyandırma kelimesini 8 kez söyle; tanımanın senin telaffuzunu öğrenir.");
-            ui.horizontal(|ui| {
-                let hazir = self.dinleyici.is_some() && self.dinle_hazir;
-                ui.add_enabled_ui(hazir, |ui| {
-                    if !self.ogren_acik {
-                        if dugme(ui, "Öğren", true).clicked() { self.ogren_acik = true; self.ogren_n = 0; self.komut(DKomut::Ogren(true)); }
-                    } else if dugme(ui, "Durdur", false).clicked() { self.ogren_acik = false; self.komut(DKomut::Ogren(false)); }
+            baslik(ui, "Kelimeler ve öğrenme");
+            alt_yazi(ui, "Her kelimeyi ayrı öğret: Öğren'e bas, kelimeyi 8 kez söyle. Telaffuz varyasyonları arka planda tutulur.");
+            ui.add_space(4.0);
+            let hazir = self.dinleyici.is_some() && self.dinle_hazir;
+            for (k, kelime) in ["hey edit", "edit"].iter().enumerate() {
+                let sayi = if k == 0 { self.ayar.ekstra_hey.len() } else { self.ayar.ekstra_edit.len() };
+                ui.horizontal(|ui| {
+                    egui::Frame::none().fill(VISNE_KOYU).stroke(Stroke::new(1.0, YUZEY_KENAR)).rounding(Rounding::same(20.0)).inner_margin(Margin::symmetric(14.0, 6.0)).show(ui, |ui| {
+                        ui.label(RichText::new(*kelime).font(FontId::new(16.0, serif())));
+                    });
+                    ui.label(RichText::new(if sayi > 0 { format!("{sayi} varyasyon öğrenildi") } else { "öğrenilmedi".to_string() }).size(12.5).color(SOLUK_KREM));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if dugme(ui, "Sıfırla", false).clicked() {
+                            if k == 0 { self.ayar.ekstra_hey.clear(); } else { self.ayar.ekstra_edit.clear(); }
+                            d = true;
+                        }
+                        let bu = self.ogren_acik && self.ogren_hedef == k;
+                        ui.add_enabled_ui(hazir && (!self.ogren_acik || bu), |ui| {
+                            if !bu {
+                                if dugme(ui, "Öğren", true).clicked() { self.ogren_hedef = k; self.ogren_acik = true; self.ogren_n = 0; self.komut(DKomut::Ogren(true)); }
+                            } else if dugme(ui, "Durdur", false).clicked() { self.ogren_acik = false; self.komut(DKomut::Ogren(false)); }
+                        });
+                    });
                 });
-                if dugme(ui, "Sıfırla", false).clicked() { self.ayar.uyandirma_ekstra.clear(); d = true; }
-            });
-            if self.ogren_acik { ui.add(egui::ProgressBar::new(self.ogren_n as f32 / 8.0).fill(YESIL).text(format!("{}/8", self.ogren_n))); }
-            if !self.ayar.uyandirma_ekstra.is_empty() { alt_yazi(ui, &format!("{} öğrenilmiş varyasyon kayıtlı.", self.ayar.uyandirma_ekstra.len())); }
+                if self.ogren_acik && self.ogren_hedef == k { ui.add(egui::ProgressBar::new(self.ogren_n as f32 / 8.0).fill(YESIL).text(format!("{}/8", self.ogren_n))); }
+                ui.add_space(4.0);
+            }
             if self.dinleyici.is_none() { alt_yazi(ui, "Önce Mikrofon bölümünden konuşma modellerini indir."); }
             if !self.dinle_hata.is_empty() { alt_yazi(ui, &self.dinle_hata); }
         });
         kart(ui, |ui| {
             baslik(ui, "Kısayol");
             d |= satir_anahtar(ui, "Kısayolla dinle", "Bu tuşa basınca uyandırma kelimesi beklemeden dinlemeye geçer. Terminal açıkken her yerde çalışır; tekrar basınca iptal eder.", &mut self.ayar.kisayol_acik);
-            ui.horizontal(|ui| {
-                ui.label("Tuş");
-                egui::ComboBox::from_id_salt("ks").selected_text(self.ayar.kisayol.clone()).show_ui(ui, |ui| {
-                    for k in ["Ctrl+Alt+E", "Ctrl+Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+M", "F8", "F9"] {
-                        if ui.selectable_value(&mut self.ayar.kisayol, k.to_string(), k).changed() { d = true; }
-                    }
-                });
+            ui.horizontal_wrapped(|ui| {
+                for k in ["Ctrl+Alt+F9", "Ctrl+Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+M"] {
+                    if ui.selectable_label(self.ayar.kisayol == k && !self.ks_yakala, k).clicked() { self.ayar.kisayol = k.to_string(); self.ks_yakala = false; d = true; }
+                }
+                if ui.selectable_label(self.ks_yakala, "Özel").clicked() { self.ks_yakala = true; self.ks_aday.clear(); self.ks_not.clear(); }
+                if dugme(ui, "Sıfırla", false).clicked() { self.ayar.kisayol = "Ctrl+Alt+F9".into(); self.ks_yakala = false; d = true; }
             });
-            alt_yazi(ui, "Değişiklik ayarlar kapanınca geçerli olur.");
+            alt_yazi(ui, &format!("Şu an: {}", self.ayar.kisayol));
+            if self.ks_yakala {
+                ui.add_space(4.0);
+                egui::Frame::none().fill(VISNE_KOYU).stroke(Stroke::new(1.0, KREM)).rounding(Rounding::same(14.0)).inner_margin(Margin::symmetric(14.0, 10.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(if self.ks_aday.is_empty() { "Tuş kombinasyonuna bas…".to_string() } else { self.ks_aday.clone() }).font(FontId::new(18.0, serif())));
+                    if !self.ks_not.is_empty() { alt_yazi(ui, &self.ks_not.clone()); }
+                });
+                ui.horizontal(|ui| {
+                    if !self.ks_aday.is_empty() && dugme(ui, "Kaydet", true).clicked() { self.ayar.kisayol = self.ks_aday.clone(); self.ks_yakala = false; d = true; }
+                    if dugme(ui, "Vazgeç", false).clicked() { self.ks_yakala = false; }
+                });
+                alt_yazi(ui, "Ctrl, Alt veya Shift ile bir harf, rakam, F tuşu ya da Boşluk bas. Algılanıyorsa kısayol olarak da çalışır.");
+            }
+            alt_yazi(ui, "Değişiklik ayarlar kapanınca geçerli olur. Başka bir uygulama o tuşu kullanıyorsa terminal uyarır.");
         });
         kart(ui, |ui| {
             d |= satir_anahtar(ui, "Cümle başında olsun", "Kelime yalnızca cümlenin başında duyulursa uyan.", &mut self.ayar.cumle_basi);
@@ -626,12 +734,47 @@ impl AyarUyg {
     }
 
     fn sohbetler(&mut self, ui: &mut Ui) {
-        sayfa_basligi(ui, "Sohbetler", "Kayıtlı sohbetlerin adını düzenle veya sil.");
+        if let Some(c) = self.gor.clone() {
+            if dugme(ui, "‹ Sohbetler", false).clicked() { self.gor = None; return; }
+            ui.add_space(6.0);
+            sayfa_basligi(ui, &c.baslik, &c.model.replace('|', " · "));
+            let en = ui.available_width();
+            for m in &c.mesajlar {
+                match m.k.as_str() {
+                    "k" => {
+                        ui.with_layout(Layout::top_down(Align::Max), |ui| {
+                            egui::Frame::none().fill(YUZEY_ACIK).stroke(Stroke::new(1.0, YUZEY_KENAR)).rounding(Rounding::same(16.0)).inner_margin(Margin::symmetric(12.0, 8.0)).show(ui, |ui| {
+                                ui.set_max_width(en * 0.78);
+                                ui.label(RichText::new(&m.m).size(15.0).color(METIN_KOYU));
+                            });
+                        });
+                    }
+                    "n" => { ui.label(RichText::new(&m.m).size(12.0).color(SOLUK_KREM)); }
+                    _ => {
+                        egui::Frame::none().fill(YUZEY).stroke(Stroke::new(1.0, YUZEY_KENAR)).rounding(Rounding::same(16.0)).inner_margin(Margin::symmetric(12.0, 8.0)).show(ui, |ui| {
+                            ui.set_max_width(en * 0.88);
+                            ui.label(RichText::new(&m.m).font(FontId::new(16.0, serif())));
+                        });
+                    }
+                }
+                ui.add_space(6.0);
+            }
+            if c.mesajlar.is_empty() { alt_yazi(ui, "Bu sohbette henüz mesaj yok."); }
+            ui.add_space(10.0);
+            if dugme(ui, "Sohbete gir", true).clicked() {
+                let _ = std::fs::write(crate::ayarlar::klasor().join("gir.txt"), &c.id);
+                self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            alt_yazi(ui, "Ayarlar kapanır ve terminalde bu sohbet açılır.");
+            return;
+        }
+        sayfa_basligi(ui, "Sohbetler", "Kayıtlı sohbetleri gör, adını düzenle veya sil.");
         if dugme(ui, "Yenile", false).clicked() { self.sohbetler = depo::hepsi(); }
         ui.add_space(8.0);
         if self.sohbetler.is_empty() { alt_yazi(ui, "Kayıtlı sohbet yok."); }
         let mut kaydet_ad: Option<(String, String)> = None;
         let mut sil: Option<String> = None;
+        let mut gor: Option<depo::Sohbet> = None;
         for s in self.sohbetler.clone() {
             kart(ui, |ui| {
                 let duzen = self.ad_duzen.as_ref().map(|(id, _)| *id == s.id).unwrap_or(false);
@@ -652,12 +795,14 @@ impl AyarUyg {
                     let tarih = chrono::DateTime::from_timestamp_millis(s.guncelleme).map(|d| d.with_timezone(&chrono::Local).format("%d.%m.%Y %H:%M").to_string()).unwrap_or_default();
                     alt_yazi(ui, &format!("{} · {} mesaj · {}", tarih, s.mesajlar.len(), s.model.replace('|', " · ")));
                     ui.horizontal(|ui| {
+                        if dugme(ui, "Sohbeti gör", true).clicked() { gor = Some(s.clone()); }
                         if dugme(ui, "Adı düzenle", false).clicked() { self.ad_duzen = Some((s.id.clone(), s.baslik.clone())); }
                         if dugme(ui, "Sil", false).clicked() { self.sil_onay = Some(s.id.clone()); }
                     });
                 }
             });
         }
+        if gor.is_some() { self.gor = gor; }
         if let Some((id, ad)) = kaydet_ad {
             if let Some(s) = self.sohbetler.iter_mut().find(|s| s.id == id) {
                 if !ad.trim().is_empty() { s.baslik = ad.trim().to_string(); }
@@ -673,25 +818,40 @@ impl AyarUyg {
     }
 
     fn izinler(&mut self, ui: &mut Ui) {
-        sayfa_basligi(ui, "İzinler", "Uygulamanın ihtiyaç duyduğu erişimler.");
+        sayfa_basligi(ui, "İzinler", "Windows'ta telefon gibi tek tek izin penceresi yoktur; uygulamanın ihtiyacı olan şeyler burada.");
         self.dinleyici_baslat();
         kart(ui, |ui| {
             baslik(ui, "Mikrofon");
             let (t, c) = if self.dinle_hazir { ("Erişim var, mikrofon açık.", YESIL_ACIK) } else if !self.dinle_hata.is_empty() { ("Mikrofon açılamadı.", HATA_ACIK) } else { ("Henüz kontrol edilmedi.", SOLUK_KREM) };
             ui.label(RichText::new(t).color(c));
             if !self.dinle_hata.is_empty() { alt_yazi(ui, &self.dinle_hata); }
-            if dugme(ui, "Windows mikrofon ayarlarını aç", false).clicked() {
-                let _ = std::process::Command::new("cmd").args(["/C", "start", "", "ms-settings:privacy-microphone"]).spawn();
-            }
+            alt_yazi(ui, "Mikrofon çalışmıyorsa Windows'ta \"Masaüstü uygulamalarının mikrofonuna erişmesine izin ver\" seçeneği açık olmalı.");
+            ui.horizontal(|ui| {
+                if dugme(ui, "Windows mikrofon ayarlarını aç", false).clicked() {
+                    let _ = std::process::Command::new("cmd").args(["/C", "start", "", "ms-settings:privacy-microphone"]).spawn();
+                }
+            });
         });
         kart(ui, |ui| {
             baslik(ui, "Ağ");
             alt_yazi(ui, "Yapay zeka, ses ve MCP istekleri için internet gerekir. Konuşma tanıma tamamen bu bilgisayarda çalışır; uyandırma kelimesinden önceki konuşma hiçbir yere gönderilmez.");
         });
+        kart(ui, |ui| {
+            baslik(ui, "Verilerin");
+            alt_yazi(ui, "Ayarlar, API anahtarları, sohbetler ve konuşma modelleri yalnızca bu bilgisayarda, aşağıdaki klasörde durur. Hiçbiri GitHub'a gönderilmez.");
+            ui.label(RichText::new(crate::ayarlar::klasor().display().to_string()).size(13.0));
+            if dugme(ui, "Klasörü aç", false).clicked() {
+                let _ = std::process::Command::new("explorer").arg(crate::ayarlar::klasor()).spawn();
+            }
+        });
+        kart(ui, |ui| {
+            baslik(ui, "Kısayol ve diğer");
+            alt_yazi(ui, "Kısayol tuşu (Uyandırma bölümü) ayrı bir izin istemez. Başka bir uygulama aynı tuşu kullanıyorsa terminal uyarır.");
+        });
     }
 
     fn guncelleme(&mut self, ui: &mut Ui) {
-        sayfa_basligi(ui, "Güncelleme", "Yeni sürümleri GitHub'dan kontrol edip yükler.");
+        sayfa_basligi(ui, "Güncelleme", "Terminal her açılışta yeni sürümü kendiliğinden kontrol eder ve sorar. Buradan elle de bakabilirsin.");
         self.kontrol.yokla();
         self.kur.yokla();
         kart(ui, |ui| {
@@ -703,13 +863,19 @@ impl AyarUyg {
                 Some(Some((n, url))) => {
                     ui.label(format!("Yeni sürüm var: 0.4.{n}"));
                     if !self.kur.bekliyor && dugme(ui, "Yükle ve yeniden başlat", true).clicked() {
-                        self.kur.baslat(&self.ctx, move || guncelleme::kur(&url));
+                        self.kur_il.store(0, Ordering::Relaxed);
+                        let il = self.kur_il.clone();
+                        self.kur.baslat(&self.ctx, move || guncelleme::kur(&url, il));
                     }
                 }
                 Some(None) => alt_yazi(ui, "Güncelsin."),
                 None => {}
             }
-            if self.kur.bekliyor { alt_yazi(ui, "İndiriliyor…"); }
+            if self.kur.bekliyor {
+                let b = self.kur_il.load(Ordering::Relaxed) as f32 / 1000.0;
+                ui.add(egui::ProgressBar::new(b).fill(YESIL).desired_height(12.0).text(format!("İndiriliyor %{}", (b * 100.0) as u32)));
+                self.ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
             if !self.kur.hata.is_empty() { ui.label(RichText::new(&self.kur.hata).size(12.5).color(HATA_ACIK)); }
         });
         if self.kur.veri.is_some() { std::process::exit(42); }
@@ -754,6 +920,27 @@ impl eframe::App for AyarUyg {
 
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.olaylar();
+        if self.ks_yakala {
+            let ev = ctx.input(|i| i.events.clone());
+            for e in ev {
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+                    match tus_adi(key) {
+                        Some(ad) => {
+                            let mut p = vec![];
+                            if modifiers.ctrl { p.push("Ctrl".to_string()); }
+                            if modifiers.alt { p.push("Alt".to_string()); }
+                            if modifiers.shift { p.push("Shift".to_string()); }
+                            if p.is_empty() && !ad.starts_with('F') { self.ks_not = "Tek başına harf kısayol olamaz; Ctrl, Alt veya Shift ekle.".into(); }
+                            else { p.push(ad); self.ks_aday = p.join("+"); self.ks_not.clear(); }
+                        }
+                        None => {
+                            if !matches!(key, egui::Key::Escape) { self.ks_not = "Bu tuş desteklenmiyor.".into(); }
+                        }
+                    }
+                }
+            }
+            ctx.request_repaint();
+        }
         if self.test_acik || self.ogren_acik { ctx.request_repaint_after(std::time::Duration::from_millis(60)); }
         let genis = ctx.screen_rect().width() >= 720.0;
         let cerceve = egui::Frame::none().fill(VISNE).inner_margin(Margin::same(18.0));
@@ -762,7 +949,7 @@ impl eframe::App for AyarUyg {
                 ui.label(RichText::new("Ayarlar").font(FontId::new(24.0, serif())).color(KREM));
                 ui.add_space(10.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    for i in 0..KATEGORILER.len() { if self.kategori_karti(ui, i) { self.sayfa = i; } }
+                    for i in 0..KATEGORILER.len() { if self.kategori_karti(ui, i) { self.sayfa = i; self.ai_servis = None; self.gor = None; } }
                 });
             });
             egui::CentralPanel::default().frame(cerceve).show(ctx, |ui| {
@@ -777,7 +964,7 @@ impl eframe::App for AyarUyg {
                     ui.label(RichText::new("Ayarlar").font(FontId::new(28.0, serif())).color(KREM));
                     ui.add_space(10.0);
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        for i in 0..KATEGORILER.len() { if self.kategori_karti(ui, i) { self.sayfa = i; self.sayfa_acik = true; } }
+                        for i in 0..KATEGORILER.len() { if self.kategori_karti(ui, i) { self.sayfa = i; self.ai_servis = None; self.gor = None; self.sayfa_acik = true; } }
                     });
                 } else {
                     if dugme(ui, "‹ Geri", false).clicked() { self.sayfa_acik = false; }

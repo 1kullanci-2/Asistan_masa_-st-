@@ -25,13 +25,23 @@ pub fn kontrol() -> Result<Option<(u32, String)>, String> {
     Ok(if n > SURUM && !url.is_empty() { Some((n, url)) } else { None })
 }
 
-/// Yeni sürümü indirip açar, kopyalama betiğini başlatır. Başarılıysa uygulama kapanmalı.
-pub fn kur(url: &str) -> Result<(), String> {
+/// Yeni sürümü indirip açar, kopyalama betiğini başlatır. İlerleme 0..1000 olarak yazılır.
+pub fn kur(url: &str, ilerleme: std::sync::Arc<std::sync::atomic::AtomicU32>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
     let d = klasor().join("guncelleme");
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("yeni")).map_err(|e| e.to_string())?;
+    let y = ureq::get(url).set("User-Agent", "edith").call().map_err(|e| e.to_string())?;
+    let toplam: f32 = y.header("content-length").and_then(|s| s.parse().ok()).unwrap_or(20_000_000.0);
+    let mut o = y.into_reader();
     let mut b = vec![];
-    ureq::get(url).set("User-Agent", "edith").call().map_err(|e| e.to_string())?.into_reader().read_to_end(&mut b).map_err(|e| e.to_string())?;
+    let mut tampon = vec![0u8; 64 * 1024];
+    loop {
+        let n = o.read(&mut tampon).map_err(|e| e.to_string())?;
+        if n == 0 { break; }
+        b.extend_from_slice(&tampon[..n]);
+        ilerleme.store(((b.len() as f32 / toplam).min(1.0) * 950.0) as u32, Ordering::Relaxed);
+    }
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(b)).map_err(|e| e.to_string())?;
     for i in 0..zip.len() {
         let mut g = zip.by_index(i).map_err(|e| e.to_string())?;
@@ -45,5 +55,6 @@ pub fn kur(url: &str) -> Result<(), String> {
     let bat = d.join("guncelle.bat");
     std::fs::write(&bat, format!("@echo off\r\ntimeout /t 2 /nobreak >nul\r\n:d\r\nxcopy /y /e \"{}\\*\" \"{}\\\" >nul 2>&1\r\nif errorlevel 1 (\r\ntimeout /t 1 /nobreak >nul\r\ngoto d\r\n)\r\nstart \"\" \"{}\"\r\n", d.join("yeni").display(), kok.display(), exe.display())).map_err(|e| e.to_string())?;
     std::process::Command::new("cmd").args(["/C", "start", "", "/min", &bat.to_string_lossy()]).spawn().map_err(|e| e.to_string())?;
+    ilerleme.store(1000, Ordering::Relaxed);
     Ok(())
 }

@@ -67,6 +67,8 @@ fn banner() {
 
 enum Girdi {
     Kisayol,
+    Yeni(u32, String),
+    GuncelBitti(Result<(), String>),
     Satir(String),
     Ai(Olay),
     Din(DEvent),
@@ -97,6 +99,8 @@ struct T {
     kuyruk: VecDeque<String>,
     cocuk: Option<std::process::Child>,
     kisayol_tid: Arc<AtomicU32>,
+    guncel_sor: Option<(u32, String)>,
+    guncelliyor: Option<Arc<AtomicU32>>,
 }
 
 fn ayar_komutu_mu(m: &str) -> bool {
@@ -205,6 +209,19 @@ impl T {
         }
         if !self.ayar.secenekler().contains(&self.aktif.model) && self.aktif.mesajlar.is_empty() { self.aktif.model = self.ayar.varsayilan_model(); }
         self.kisayol_yenile();
+        let gir = crate::ayarlar::klasor().join("gir.txt");
+        if let Ok(id) = std::fs::read_to_string(&gir) {
+            let _ = std::fs::remove_file(&gir);
+            if self.mesgul {
+                self.not("Cevap bekleniyor, sohbete girilemedi.");
+            } else if let Some(c) = depo::hepsi().into_iter().find(|c| c.id == id.trim()) {
+                self.aktif = c;
+                self.ekrani_temizle();
+                self.sohbeti_yaz();
+                self.istem();
+                return;
+            }
+        }
         self.not("Ayarlar kaydedildi.");
         self.istem();
     }
@@ -212,11 +229,16 @@ impl T {
     fn model_listele(&mut self) {
         let sec = self.ayar.secenekler();
         if sec.is_empty() { self.not("Henüz API anahtarı yok. `/ayarlar` > Yapay zeka bölümünden ekle."); return; }
-        yaz(&format!("{SIL}"));
+        yaz(SIL);
+        let mut onceki = String::new();
         for (i, s) in sec.iter().enumerate() {
             let (sv, m) = s.split_once('|').unwrap_or(("", ""));
+            if sv != onceki {
+                println!("  {YESIL}{}{SIFIRLA}", servis_adi(sv));
+                onceki = sv.to_string();
+            }
             let isaret = if *s == self.aktif.model { format!(" {YESIL}←{SIFIRLA}") } else { String::new() };
-            println!("  {GRI}{}.{SIFIRLA} {} · {m}{isaret}", i + 1, servis_adi(sv));
+            println!("    {GRI}{}.{SIFIRLA} {m}{isaret}", i + 1);
         }
         println!("  {GRI}Numara yaz (vazgeçmek için başka bir şey yaz){SIFIRLA}");
         self.liste = Some(Liste::Model(sec));
@@ -258,8 +280,37 @@ impl T {
         }
     }
 
+    fn guncelle_basla(&mut self, url: String) {
+        let il = Arc::new(AtomicU32::new(0));
+        self.guncelliyor = Some(il.clone());
+        let gtx = self.gtx.clone();
+        std::thread::spawn(move || { let r = guncelleme::kur(&url, il); let _ = gtx.send(Girdi::GuncelBitti(r)); });
+    }
+
+    fn sesli_komut(&mut self, t: &str) -> bool {
+        let k = t.to_lowercase();
+        match k.trim_matches(|c: char| !c.is_alphanumeric()) {
+            "model" | "modeller" => self.model_listele(),
+            "sohbetler" => self.sohbet_listele(),
+            "yeni" => self.yeni(),
+            "yardım" | "yardim" => self.yardim(),
+            "çıkış" | "cikis" | "kapat" => std::process::exit(0),
+            _ => return false,
+        }
+        self.istem();
+        true
+    }
+
     fn satir(&mut self, s: &str) {
         let s = s.trim().to_string();
+        if self.guncelliyor.is_some() { return; }
+        if let Some((_, url)) = self.guncel_sor.clone() {
+            match s.to_lowercase().as_str() {
+                "e" | "evet" => { self.guncel_sor = None; self.guncelle_basla(url); return; }
+                "h" | "hayır" | "hayir" => { self.guncel_sor = None; self.not("Güncelleme atlandı."); self.istem(); return; }
+                _ => self.guncel_sor = None,
+            }
+        }
         if let Some(l) = &self.liste {
             let adet = match l { Liste::Model(v) => v.len(), Liste::Sohbet(v) => v.len() };
             if let Ok(n) = s.parse::<usize>() {
@@ -366,6 +417,7 @@ impl T {
             DEvent::Son(t) => {
                 self.dinliyor = false;
                 if ayar_komutu_mu(&t) { yaz(SIL); self.ayar_ac(); self.istem(); }
+                else if self.sesli_komut(&t) {}
                 else if self.mesgul { self.not("Cevap bekleniyor, komut atlandı."); }
                 else { self.gonder(&t, true); }
             }
@@ -376,6 +428,12 @@ impl T {
 
     fn tik(&mut self) {
         self.kare += 1;
+        if let Some(il) = &self.guncelliyor {
+            let b = il.load(Ordering::Relaxed);
+            let dolu = (b as usize * 30) / 1000;
+            yaz(&format!("{SIL}  {YESIL}{}{GRI}{}{SIFIRLA} %{}  güncelleme indiriliyor", "█".repeat(dolu), "░".repeat(30 - dolu), b / 10));
+            return;
+        }
         if self.mesgul && self.akan.is_empty() {
             let n = (self.kare / 3) % 4;
             let yazi = if self.arac.is_empty() { "Düşünüyor".to_string() } else { format!("Araç çalışıyor · {}", self.arac) };
@@ -480,6 +538,7 @@ pub fn calistir() {
     let oynatici = Oynatici::yeni();
     let araclar: Araclar = Arc::new(Mutex::new(vec![]));
     mcp::yenile(&araclar, &ayar.mcp);
+    mcp::bekci(araclar.clone());
     let (gtx, grx) = channel::<Girdi>();
     let dinleyici = if dinleme::modeller_hazir() {
         let d = dinleme::baslat(Arc::new(|| {}), ayar.dinleme_ayari(), oynatici.bayrak());
@@ -487,7 +546,7 @@ pub fn calistir() {
     } else { None };
     let mut t = T {
         aktif: Sohbet::yeni(ayar.varsayilan_model()), ayar, gtx: gtx.clone(), araclar, oynatici, dinleyici, liste: None, mesgul: false, akan: String::new(), arac: String::new(),
-        hata: false, sesli: false, sonra_dinle: false, dinliyor: false, kare: 0, kuyruk: VecDeque::new(), cocuk: None, kisayol_tid: Arc::new(AtomicU32::new(0)),
+        hata: false, sesli: false, sonra_dinle: false, dinliyor: false, kare: 0, kuyruk: VecDeque::new(), cocuk: None, kisayol_tid: Arc::new(AtomicU32::new(0)), guncel_sor: None, guncelliyor: None,
     };
     // Dinleyici olaylarını ana döngüye ilet.
     if let Some(d) = t.dinleyici.take() {
@@ -501,8 +560,8 @@ pub fn calistir() {
     // Güncelleme kontrolü (sessiz).
     let g3 = gtx.clone();
     std::thread::spawn(move || {
-        if let Ok(Some((n, _))) = guncelleme::kontrol() {
-            let _ = g3.send(Girdi::Satir(format!("\u{1}yeni:{n}")));
+        if let Ok(Some((n, url))) = guncelleme::kontrol() {
+            let _ = g3.send(Girdi::Yeni(n, url));
         }
     });
     let g4 = gtx.clone();
@@ -521,12 +580,18 @@ pub fn calistir() {
                 if s == "\u{1}kisayolhata" {
                     t.not("Kısayol tuşu başka bir uygulamada kullanılıyor; Ayarlar > Uyandırma'dan değiştir.");
                     t.istem();
-                } else if let Some(n) = s.strip_prefix("\u{1}yeni:") {
-                    t.not(&format!("Yeni sürüm var (0.4.{n}). `/ayarlar` > Güncelleme bölümünden yükleyebilirsin."));
-                    t.istem();
                 } else { t.satir(&s); }
             }
             Ok(Girdi::Kisayol) => t.kisayol_basildi(),
+            Ok(Girdi::Yeni(n, url)) => {
+                t.guncel_sor = Some((n, url));
+                t.not(&format!("Yeni sürüm var (0.4.{n}). Güncellensin mi? (E/H)"));
+                t.istem();
+            }
+            Ok(Girdi::GuncelBitti(r)) => match r {
+                Ok(()) => { yaz(&format!("{SIL}  {GRI}Güncelleme hazır, yeniden başlatılıyor…{SIFIRLA}\n")); std::process::exit(0); }
+                Err(e) => { t.guncelliyor = None; t.not(&format!("Güncelleme başarısız: {e}")); t.istem(); }
+            },
             Ok(Girdi::Ai(o)) => t.ai_olay(o),
             Ok(Girdi::Din(e)) => t.dinle_olay(e),
             Ok(Girdi::Kapat) => break,

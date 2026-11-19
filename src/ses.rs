@@ -96,6 +96,8 @@ impl Oynatici {
                 if a.ses_sirayla { continue } else { return None }
             }
             let r = match motor.as_str() {
+                "gemini" if !a.gemini_ses_acik => continue,
+                "eleven" if !a.eleven_ses_acik => continue,
                 "gemini" if !a.gemini_anahtar.is_empty() => gemini_tts(metin, &a.gemini_anahtar, &a.gemini_ses),
                 "eleven" if !a.eleven_anahtar.is_empty() && !a.eleven_ses.is_empty() => eleven_tts(metin, a),
                 _ => continue,

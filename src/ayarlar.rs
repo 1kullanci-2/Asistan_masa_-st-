@@ -40,6 +40,10 @@ pub struct Ayar {
     pub ses_sirayla: bool,
     pub kisayol_acik: bool,
     pub kisayol: String,
+    pub gemini_ses_acik: bool,
+    pub eleven_ses_acik: bool,
+    pub ekstra_hey: Vec<String>,
+    pub ekstra_edit: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -82,14 +86,44 @@ impl Default for Ayar {
             sessizlik_kapisi: true,
             ses_sirayla: true,
             kisayol_acik: true,
-            kisayol: "Ctrl+Alt+E".into(),
+            kisayol: "Ctrl+Alt+F9".into(),
+            gemini_ses_acik: true,
+            eleven_ses_acik: true,
+            ekstra_hey: vec![],
+            ekstra_edit: vec![],
         }
     }
 }
 
 impl Ayar {
     pub fn yukle() -> Self {
-        std::fs::read_to_string(klasor().join("ayar.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let mut a: Self = std::fs::read_to_string(klasor().join("ayar.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        if !a.uyandirma_ekstra.is_empty() {
+            let eski = std::mem::take(&mut a.uyandirma_ekstra);
+            for e in eski { if !a.ekstra_edit.contains(&e) { a.ekstra_edit.push(e); } }
+        }
+        if a.kisayol == "Ctrl+Alt+E" { a.kisayol = "Ctrl+Alt+F9".into(); }
+        a
+    }
+    pub fn ekstra_hepsi(&self) -> Vec<String> {
+        self.ekstra_hey.iter().chain(self.ekstra_edit.iter()).cloned().collect()
+    }
+    pub fn modeller_yaz(&mut self, servis: &str, m: &[String]) {
+        let s = m.iter().take(2).cloned().collect::<Vec<_>>().join(",");
+        match servis {
+            "gemini" => self.gemini_modeller = s,
+            "groq" => self.groq_modeller = s,
+            "cerebras" => self.cerebras_modeller = s,
+            _ => self.mistral_modeller = s,
+        }
+    }
+    pub fn anahtar_mut(&mut self, servis: &str) -> &mut String {
+        match servis {
+            "gemini" => &mut self.gemini_anahtar,
+            "groq" => &mut self.groq_anahtar,
+            "cerebras" => &mut self.cerebras_anahtar,
+            _ => &mut self.mistral_anahtar,
+        }
     }
     pub fn kaydet(&self) {
         if let Ok(s) = serde_json::to_string_pretty(self) {
@@ -129,7 +163,7 @@ impl Ayar {
     }
     pub fn dinleme_ayari(&self) -> crate::dinleme::DAyar {
         crate::dinleme::DAyar {
-            ekstra: self.uyandirma_ekstra.clone(),
+            ekstra: self.ekstra_hepsi(),
             cumle_basi: self.cumle_basi,
             sesle_kes: self.sesle_kes,
             hoparlor: self.hoparlor_modu,

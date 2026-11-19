@@ -300,15 +300,21 @@ impl Is {
 
     fn ogrenmeyi_bitir(&mut self) {
         let Some(ornek) = self.ogren.take() else { return };
+        const DURAK: [&str; 14] = ["a", "an", "the", "i", "it", "is", "in", "on", "at", "of", "to", "and", "or", "uh"];
         let mut say: HashMap<String, u32> = HashMap::new();
         for o in &ornek {
-            let mut gorulen: Vec<String> = vec![];
-            for t in o.to_lowercase().split_whitespace() {
-                if t.chars().count() >= 3 && !gorulen.contains(&t.to_string()) { gorulen.push(t.to_string()); }
-            }
-            for t in gorulen { *say.entry(t).or_default() += 1; }
+            let t = o.to_lowercase().replace("[unk]", " ").split_whitespace().collect::<Vec<_>>().join(" ");
+            if !t.is_empty() { *say.entry(t).or_default() += 1; }
         }
-        let mut v: Vec<String> = say.into_iter().filter(|(t, n)| *n >= 2 && !ONEKLER.contains(&t.as_str()) && !TEMEL.contains(&t.as_str())).map(|(t, _)| t).collect();
+        let mut v: Vec<String> = say
+            .into_iter()
+            .filter(|(t, n)| {
+                let k: Vec<&str> = t.split_whitespace().collect();
+                *n >= 2 && (1..=4).contains(&k.len()) && !VARYASYON.contains(&t.as_str())
+                    && (k.iter().any(|x| !DURAK.contains(x) && !["hey", "hi", "hello"].contains(x) && x.chars().count() >= 3) || (k.len() >= 2 && ["hey", "hi", "hello", "a"].contains(&k[0])))
+            })
+            .map(|(t, _)| t)
+            .collect();
         v.sort();
         self.g(DEvent::Ogrenildi(v));
     }

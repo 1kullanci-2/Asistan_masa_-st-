@@ -78,28 +78,33 @@ pub fn akis(servis: &str, model: &str, anahtar: &str, gecmis: Vec<(String, Strin
         yenile();
     };
     if servis != "gemini" {
-        let taban = match servis {
-            "groq" => "https://api.groq.com/openai/v1/chat/completions",
-            "cerebras" => "https://api.cerebras.ai/v1/chat/completions",
-            _ => "https://api.mistral.ai/v1/chat/completions",
-        };
+        let taban = openai_url(servis);
         let mut msgs = vec![json!({"role": "system", "content": SISTEM})];
         msgs.extend(gecmis.iter().map(|(r, m)| json!({"role": r, "content": m})));
-        match istek(taban, &json!({"model": model, "messages": msgs, "stream": true}), anahtar, false) {
-            Ok(y) => {
-                for l in BufReader::new(y.into_reader()).lines().flatten() {
-                    let Some(v) = l.strip_prefix("data:") else { continue };
-                    let v = v.trim();
-                    if v == "[DONE]" { break; }
-                    if let Ok(j) = serde_json::from_str::<Value>(v) {
-                        if let Some(t) = j["choices"][0]["delta"]["content"].as_str() { gonder(Olay::Parca(t.into())); }
-                    }
-                }
-                gonder(Olay::Bitti);
+        let araclar_json: Vec<Value> = arac_tanimlari(&araclar, &kapali).into_iter().map(|d| json!({"type": "function", "function": d})).collect();
+        for _tur in 0..8 {
+            let mut govde = json!({"model": model, "messages": msgs});
+            if !araclar_json.is_empty() { govde["tools"] = json!(araclar_json); govde["tool_choice"] = json!("auto"); }
+            let y: Value = match istek(&format!("{taban}/chat/completions"), &govde, anahtar, false).and_then(|r| r.into_json().map_err(|e| e.to_string())) {
+                Ok(y) => y,
+                Err(e) => return gonder(Olay::Hata(e)),
+            };
+            let m = &y["choices"][0]["message"];
+            let calls = m["tool_calls"].as_array().cloned().unwrap_or_default();
+            if calls.is_empty() {
+                if let Some(t) = m["content"].as_str() { if !t.is_empty() { gonder(Olay::Parca(t.into())); } }
+                return gonder(Olay::Bitti);
             }
-            Err(e) => gonder(Olay::Hata(e)),
+            msgs.push(json!({"role": "assistant", "content": m["content"].clone(), "tool_calls": calls.clone()}));
+            for c in calls {
+                let ad = c["function"]["name"].as_str().unwrap_or("").to_string();
+                let args: Value = c["function"]["arguments"].as_str().and_then(|a| serde_json::from_str(a).ok()).unwrap_or_else(|| json!({}));
+                gonder(Olay::Arac(ad.split_once('_').map(|x| x.1).unwrap_or(&ad).to_string()));
+                let sonuc = arac_calistir(&araclar, &ad, args);
+                msgs.push(json!({"role": "tool", "tool_call_id": c["id"], "content": sonuc}));
+            }
         }
-        return;
+        return gonder(Olay::Hata("Araç çağrısı çok uzadı, durduruldu.".into()));
     }
 
     let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse");
@@ -155,4 +160,41 @@ pub fn isaretleri_ayir(m: &str) -> (String, Option<String>, bool) {
     let soru = t.contains("[SORU]");
     t = t.replace("[SORU]", "");
     (t.trim().to_string(), baslik, soru)
+}
+
+fn openai_url(servis: &str) -> &'static str {
+    match servis {
+        "groq" => "https://api.groq.com/openai/v1",
+        "cerebras" => "https://api.cerebras.ai/v1",
+        _ => "https://api.mistral.ai/v1",
+    }
+}
+
+/// Anahtarla erişilebilen modelleri listeler.
+pub fn model_listesi(servis: &str, anahtar: &str) -> Result<Vec<String>, String> {
+    let ajan = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
+    let mut v: Vec<String> = if servis == "gemini" {
+        let j: Value = ajan.get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200").set("x-goog-api-key", anahtar).call().map_err(|e| e.to_string())?.into_json().map_err(|e| e.to_string())?;
+        j["models"].as_array().map(|a| a.iter().filter(|m| m["supportedGenerationMethods"].as_array().map(|g| g.iter().any(|x| x == "generateContent")).unwrap_or(false)).filter_map(|m| m["name"].as_str().map(|n| n.trim_start_matches("models/").to_string())).collect()).unwrap_or_default()
+    } else {
+        let j: Value = ajan.get(&format!("{}/models", openai_url(servis))).set("Authorization", &format!("Bearer {anahtar}")).call().map_err(|e| e.to_string())?.into_json().map_err(|e| e.to_string())?;
+        j["data"].as_array().map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect()).unwrap_or_default()
+    };
+    v.sort();
+    v.dedup();
+    Ok(v)
+}
+
+/// Modele küçük bir istek atar; (yanıt özeti, ms) döner.
+pub fn dene(servis: &str, model: &str, anahtar: &str) -> Result<String, String> {
+    let t = std::time::Instant::now();
+    let r: Value = if servis == "gemini" {
+        let g = json!({"contents": [{"role": "user", "parts": [{"text": "Sadece 'tamam' yaz."}]}]});
+        istek(&format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"), &g, anahtar, true)?.into_json().map_err(|e| e.to_string())?
+    } else {
+        let g = json!({"model": model, "messages": [{"role": "user", "content": "Sadece 'tamam' yaz."}]});
+        istek(&format!("{}/chat/completions", openai_url(servis)), &g, anahtar, false)?.into_json().map_err(|e| e.to_string())?
+    };
+    let metin = if servis == "gemini" { r["candidates"][0]["content"]["parts"][0]["text"].as_str().unwrap_or("").to_string() } else { r["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string() };
+    Ok(format!("çalışıyor · {} ms · {}", t.elapsed().as_millis(), metin.trim().chars().take(24).collect::<String>()))
 }
