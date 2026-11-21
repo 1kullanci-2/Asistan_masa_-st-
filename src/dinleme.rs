@@ -21,7 +21,10 @@ pub struct DAyar {
     pub takip_s: f32,
     pub sessizlik_s: f32,
     pub kapi: bool,
+    pub kazanc: f32,
 }
+
+static KAZANC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3fc00000); // 1.5
 
 pub enum DKomut {
     Dinle,
@@ -403,7 +406,8 @@ where
                     if faz >= adim {
                         faz -= adim;
                         let y = if filtre { (0..N).map(|k| taps[k] * gecmis[(konum + N - 1 - k) % N]).sum::<f32>() } else { m };
-                        cikis.push((y * 32767.0).clamp(-32768.0, 32767.0) as i16);
+                        let kz = f32::from_bits(KAZANC.load(Ordering::Relaxed));
+                        cikis.push((y * kz * 32767.0).clamp(-32768.0, 32767.0) as i16);
                     }
                 }
                 if !cikis.is_empty() { let _ = tx.send(cikis); }
@@ -415,6 +419,7 @@ where
 }
 
 pub fn baslat(bildir: Bildir, ayar: DAyar, konusuyor: Arc<AtomicBool>) -> Dinleyici {
+    KAZANC.store(ayar.kazanc.to_bits(), Ordering::Relaxed);
     let (ktx, krx) = channel::<DKomut>();
     let (otx, orx) = channel::<DEvent>();
     std::thread::spawn(move || {
@@ -458,7 +463,7 @@ pub fn baslat(bildir: Bildir, ayar: DAyar, konusuyor: Arc<AtomicBool>) -> Dinley
                         if a { is.v.sifirla(is.en); is.v.sifirla(is.tr); is.test_en.clear(); is.test_tr.clear(); is.mod_ = Mod::Test; } else { is.mod_ = Mod::Bekle; }
                     }
                     DKomut::Ogren(a) => { is.ogren = if a { Some(vec![]) } else { None }; is.mod_ = Mod::Bekle; }
-                    DKomut::Ayar(a) => is.ayar = a,
+                    DKomut::Ayar(a) => { KAZANC.store(a.kazanc.to_bits(), Ordering::Relaxed); is.ayar = a; }
                 }
             }
             match mrx.recv_timeout(Duration::from_millis(100)) {

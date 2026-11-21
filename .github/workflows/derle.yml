@@ -13,6 +13,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -40,6 +42,15 @@ jobs:
           cp target/release/edith.exe dist/
           cd dist
           7z a ../edith-windows.zip edith.exe > /dev/null
+
+      - name: Değişiklik listesini hazırla (commit mesajlarından)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$( (gh release view son-surum --json body --jq .body | sed -n 's/.*Otomatik derleme: \([0-9a-f]\{40\}\).*/\1/p' | head -1) || true )
+          gh release download son-surum -p CHANGELOG.md -O onceki.md || : > onceki.md
+          python .github/degisiklik.py "$prev" "${GITHUB_RUN_NUMBER}" onceki.md CHANGELOG.md
 
       - uses: actions/upload-artifact@v4
         with:

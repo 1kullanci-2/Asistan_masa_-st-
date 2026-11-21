@@ -44,6 +44,8 @@ pub struct Ayar {
     pub eleven_ses_acik: bool,
     pub ekstra_hey: Vec<String>,
     pub ekstra_edit: Vec<String>,
+    pub model_onbellek: std::collections::HashMap<String, Vec<String>>,
+    pub mikrofon_kazanc: f32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -91,6 +93,8 @@ impl Default for Ayar {
             eleven_ses_acik: true,
             ekstra_hey: vec![],
             ekstra_edit: vec![],
+            model_onbellek: Default::default(),
+            mikrofon_kazanc: 1.6,
         }
     }
 }
@@ -109,7 +113,7 @@ impl Ayar {
         self.ekstra_hey.iter().chain(self.ekstra_edit.iter()).cloned().collect()
     }
     pub fn modeller_yaz(&mut self, servis: &str, m: &[String]) {
-        let s = m.iter().take(2).cloned().collect::<Vec<_>>().join(",");
+        let s = m.join(",");
         match servis {
             "gemini" => self.gemini_modeller = s,
             "groq" => self.groq_modeller = s,
@@ -147,7 +151,7 @@ impl Ayar {
         }
     }
     pub fn modeller(&self, servis: &str) -> Vec<String> {
-        self.modeller_ham(servis).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).take(2).collect()
+        self.modeller_ham(servis).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
     }
     /// Anahtarı olan servislerin "servis|model" listesi.
     pub fn secenekler(&self) -> Vec<String> {
@@ -170,6 +174,7 @@ impl Ayar {
             takip_s: self.takip_s,
             sessizlik_s: self.sessizlik_s,
             kapi: self.sessizlik_kapisi,
+            kazanc: self.mikrofon_kazanc,
         }
     }
     pub fn varsayilan_model(&self) -> String {
