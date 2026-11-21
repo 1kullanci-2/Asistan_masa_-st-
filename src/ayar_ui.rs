@@ -20,7 +20,7 @@ const KATEGORILER: [(&str, &str); 8] = [
     ("Bağlantılar", "MCP sunucuları ve araçlar"),
     ("Sohbetler", "İsim düzenle, sil"),
     ("İzinler", "Mikrofon ve erişim"),
-    ("Güncelleme", "Sürüm ve yükleme"),
+    ("Hakkında", "Sürüm, güncelleme, değişiklikler"),
 ];
 
 // ---------- küçük bileşenler ----------
@@ -168,10 +168,9 @@ fn kategori_ikonu(p: &egui::Painter, i: usize, c: egui::Pos2) {
             return;
         }
         _ => {
-            p.line_segment([n(0.0, -9.0), n(0.0, 4.0)], s);
-            p.line_segment([n(-5.0, -1.0), n(0.0, 4.0)], s);
-            p.line_segment([n(5.0, -1.0), n(0.0, 4.0)], s);
-            p.line_segment([n(-8.0, 9.0), n(8.0, 9.0)], s);
+            p.circle_stroke(c, 9.5, s);
+            p.line_segment([n(0.0, -1.0), n(0.0, 5.0)], s);
+            p.circle_filled(n(0.0, -5.0), 1.6, KREM);
             return;
         }
     };
@@ -250,6 +249,8 @@ pub struct AyarUyg {
     ks_not: String,
     gor: Option<depo::Sohbet>,
     kur_il: Arc<AtomicU32>,
+    kontrol_basladi: bool,
+    dgs: Getir<String>,
 }
 
 fn tus_adi(k: egui::Key) -> Option<String> {
@@ -275,7 +276,7 @@ impl AyarUyg {
             sohbetler: depo::hepsi(), ad_duzen: None, sil_onay: None, dinleyici: None, dinleyici_denendi: false, dinle_hata: String::new(), dinle_hazir: false,
             seviye: 0.0, test_acik: false, test_en: String::new(), test_tr: String::new(), ogren_acik: false, ogren_n: 0, kurulum: None,
             kontrol: Getir::yeni(), kur: Getir::yeni(), ctx: ctx.clone(), ai_servis: None, mgetir: (0..4).map(|_| Getir::yeni()).collect(), dene: HashMap::new(), ai_not: String::new(),
-            ogren_hedef: 0, ks_yakala: false, ks_aday: String::new(), ks_not: String::new(), gor: None, kur_il: Arc::new(AtomicU32::new(0)),
+            ogren_hedef: 0, ks_yakala: false, ks_aday: String::new(), ks_not: String::new(), gor: None, kur_il: Arc::new(AtomicU32::new(0)), kontrol_basladi: false, dgs: Getir::yeni(),
         }
     }
 
@@ -850,33 +851,72 @@ impl AyarUyg {
         });
     }
 
-    fn guncelleme(&mut self, ui: &mut Ui) {
-        sayfa_basligi(ui, "Güncelleme", "Terminal her açılışta yeni sürümü kendiliğinden kontrol eder ve sorar. Buradan elle de bakabilirsin.");
+    fn hakkinda(&mut self, ui: &mut Ui) {
+        if !self.kontrol_basladi {
+            self.kontrol_basladi = true;
+            self.kontrol.baslat(&self.ctx, guncelleme::kontrol);
+            self.dgs.baslat(&self.ctx, guncelleme::degisiklik_cek);
+        }
         self.kontrol.yokla();
+        self.dgs.yokla();
         self.kur.yokla();
+        sayfa_basligi(ui, "Hakkında", "E.D.I.T.H. Windows sürümü");
         kart(ui, |ui| {
-            baslik(ui, &format!("Sürüm {}", guncelleme::surum_metni()));
-            if dugme(ui, "Güncellemeleri kontrol et", true).clicked() { self.kontrol.veri = None; self.kontrol.baslat(&self.ctx, guncelleme::kontrol); }
-            if self.kontrol.bekliyor { alt_yazi(ui, "Kontrol ediliyor…"); }
-            if !self.kontrol.hata.is_empty() { ui.label(RichText::new(&self.kontrol.hata).size(12.5).color(HATA_ACIK)); }
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+                ui.painter().rect_filled(r, Rounding::same(14.0), KREM);
+                for (k, (x, h)) in [(0.0f32, 9.0f32), (1.0, 18.0), (2.0, 26.0), (3.0, 14.0), (4.0, 6.0)].iter().enumerate() {
+                    let _ = k;
+                    let cx = r.left() + 11.0 + x * 8.5;
+                    ui.painter().line_segment([egui::pos2(cx, r.center().y - h / 2.0 - 1.0), egui::pos2(cx, r.center().y + h / 2.0 + 1.0)], Stroke::new(4.0, VURGU));
+                }
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("E.D.I.T.H").font(FontId::new(24.0, serif())).color(KREM));
+                    ui.label(RichText::new(format!("Sürüm {}", guncelleme::surum_metni())).size(14.0).color(SOLUK_KREM));
+                });
+            });
+            ui.add_space(8.0);
+            if self.kontrol.bekliyor && self.kontrol.veri.is_none() { alt_yazi(ui, "Güncellemeler kontrol ediliyor…"); }
+            if !self.kontrol.hata.is_empty() {
+                ui.label(RichText::new(&self.kontrol.hata).size(12.5).color(HATA_ACIK));
+                if dugme(ui, "Tekrar dene", false).clicked() { self.kontrol.baslat(&self.ctx, guncelleme::kontrol); }
+            }
             match self.kontrol.veri.clone() {
                 Some(Some((n, url))) => {
-                    ui.label(format!("Yeni sürüm var: 0.4.{n}"));
-                    if !self.kur.bekliyor && dugme(ui, "Yükle ve yeniden başlat", true).clicked() {
+                    ui.label(RichText::new(format!("Yeni sürüm var: 0.4.{n}")).font(FontId::new(18.0, serif())).color(YESIL_ACIK));
+                    if !self.kur.bekliyor && dugme(ui, "İndir ve yükle", true).clicked() {
                         self.kur_il.store(0, Ordering::Relaxed);
                         let il = self.kur_il.clone();
                         self.kur.baslat(&self.ctx, move || guncelleme::kur(&url, il));
                     }
                 }
-                Some(None) => alt_yazi(ui, "Güncelsin."),
+                Some(None) => alt_yazi(ui, "Güncelsin, en son sürümü kullanıyorsun."),
                 None => {}
             }
             if self.kur.bekliyor {
                 let b = self.kur_il.load(Ordering::Relaxed) as f32 / 1000.0;
-                ui.add(egui::ProgressBar::new(b).fill(YESIL).desired_height(12.0).text(format!("İndiriliyor %{}", (b * 100.0) as u32)));
+                ui.add(egui::ProgressBar::new(b).fill(YESIL).desired_height(14.0).text(format!("İndiriliyor %{}", (b * 100.0) as u32)));
+                alt_yazi(ui, "İndirme bitince uygulama kapanıp yeni sürümle yeniden açılır.");
                 self.ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
             if !self.kur.hata.is_empty() { ui.label(RichText::new(&self.kur.hata).size(12.5).color(HATA_ACIK)); }
+        });
+        kart(ui, |ui| {
+            baslik(ui, "Değişiklikler");
+            let metin = self.dgs.veri.clone().unwrap_or_else(|| guncelleme::DEGISIKLIK.to_string());
+            let mevcut = guncelleme::surum_metni();
+            for satir in metin.lines() {
+                if let Some(h) = satir.strip_prefix("## ") {
+                    ui.add_space(8.0);
+                    let simdiki = h.starts_with(&mevcut);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(h).font(FontId::new(16.5, serif())).color(KREM));
+                        if simdiki { ui.label(RichText::new("kullandığın sürüm").size(12.0).color(YESIL_ACIK)); }
+                    });
+                } else if let Some(m) = satir.strip_prefix("- ") {
+                    ui.label(RichText::new(format!("•  {m}")).size(13.5).color(METIN_KREM));
+                }
+            }
         });
         if self.kur.veri.is_some() { std::process::exit(42); }
     }
@@ -908,7 +948,7 @@ impl AyarUyg {
             4 => self.baglantilar(ui),
             5 => self.sohbetler(ui),
             6 => self.izinler(ui),
-            _ => self.guncelleme(ui),
+            _ => self.hakkinda(ui),
         }
     }
 }

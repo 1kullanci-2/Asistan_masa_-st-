@@ -11,6 +11,16 @@ pub const SURUM: u32 = match option_env!("GITHUB_RUN_NUMBER") {
     None => 0,
 };
 
+pub const DEGISIKLIK: &str = include_str!("../CHANGELOG.md");
+
+/// Son sürümün değişiklik listesini GitHub'dan çeker.
+pub fn degisiklik_cek() -> Result<String, String> {
+    ureq::get("https://github.com/1kullanci-2/Asistan_masa_-st-/releases/download/son-surum/CHANGELOG.md")
+        .set("User-Agent", "edith")
+        .call().map_err(|e| e.to_string())?
+        .into_string().map_err(|e| e.to_string())
+}
+
 pub fn surum_metni() -> String { format!("0.4.{SURUM}") }
 
 /// (yeni sürüm numarası, indirme adresi) — yeni sürüm yoksa None
