@@ -75,6 +75,22 @@ fn satir_anahtar(ui: &mut Ui, baslik: &str, aciklama: &str, v: &mut bool) -> boo
     d
 }
 
+/// Minimal ok (chevron): yön 0 = sağ, π/2 = aşağı, π = sol.
+fn ok_ciz(p: &egui::Painter, c: egui::Pos2, aci: f32, renk: Color32) {
+    let (sn, cs) = aci.sin_cos();
+    let nok: Vec<egui::Pos2> = [(-3.0f32, -5.0f32), (3.0, 0.0), (-3.0, 5.0)].iter().map(|(x, y)| egui::pos2(c.x + x * cs - y * sn, c.y + x * sn + y * cs)).collect();
+    p.add(egui::Shape::line(nok, Stroke::new(1.8, renk)));
+}
+
+fn geri_dugmesi(ui: &mut Ui, t: &str) -> egui::Response {
+    let g = ui.painter().layout_no_wrap(t.to_string(), FontId::proportional(14.5), METIN_KREM);
+    let (r, y) = ui.allocate_exact_size(Vec2::new(g.size().x + 44.0, 32.0), Sense::click());
+    ui.painter().rect_filled(r, Rounding::same(14.0), VISNE_KOYU);
+    ok_ciz(ui.painter(), r.left_center() + Vec2::new(18.0, 0.0), std::f32::consts::PI, METIN_KREM);
+    ui.painter().galley(r.left_center() + Vec2::new(30.0, -g.size().y / 2.0), g, METIN_KREM);
+    y.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 fn dugme(ui: &mut Ui, t: &str, vurgulu: bool) -> egui::Response {
     let b = if vurgulu {
         egui::Button::new(RichText::new(t).color(METIN_KOYU).strong()).fill(KREM).stroke(Stroke::NONE)
@@ -262,6 +278,15 @@ pub struct AyarUyg {
     mg_basladi: [bool; 4],
 }
 
+fn giris_listesi(metin: &str) -> Vec<(String, Vec<String>)> {
+    let mut v: Vec<(String, Vec<String>)> = vec![];
+    for satir in metin.lines() {
+        if let Some(h) = satir.strip_prefix("## ") { v.push((h.to_string(), vec![])); }
+        else if let Some(m) = satir.strip_prefix("- ") { if let Some(x) = v.last_mut() { x.1.push(m.to_string()); } }
+    }
+    v
+}
+
 /// Değişiklik metnindeki ilk (en güncel) sürüm girişi.
 fn ilk_giris(metin: &str) -> Option<(String, Vec<String>)> {
     let mut g: Option<(String, Vec<String>)> = None;
@@ -365,7 +390,7 @@ impl AyarUyg {
         ui.painter().text(r.left_top() + Vec2::new(20.0, 14.0), Align2::LEFT_TOP, servis_adi(s), FontId::new(19.0, serif()), METIN_KREM);
         let alt = if var { format!("anahtar var · {} model ekli", self.ayar.modeller(s).len()) } else { "anahtar yok".to_string() };
         ui.painter().text(r.left_top() + Vec2::new(20.0, 44.0), Align2::LEFT_TOP, alt, FontId::proportional(12.5), if var { YESIL_ACIK } else { SOLUK_KREM });
-        ui.painter().text(r.right_center() - Vec2::new(20.0, 0.0), Align2::RIGHT_CENTER, "›", FontId::proportional(26.0), SOLUK_KREM);
+        ok_ciz(ui.painter(), r.right_center() - Vec2::new(24.0, 0.0), 0.0, SOLUK_KREM);
         if y.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { self.ai_servis = Some(i); }
         ui.add_space(8.0);
     }
@@ -390,7 +415,7 @@ impl AyarUyg {
 
     fn servis_sayfasi(&mut self, ui: &mut Ui, i: usize) {
         let s = SERVISLER[i];
-        if dugme(ui, "‹ Yapay zeka", false).clicked() { self.ai_servis = None; return; }
+        if geri_dugmesi(ui, "Yapay zeka").clicked() { self.ai_servis = None; return; }
         ui.add_space(6.0);
         sayfa_basligi(ui, servis_adi(s), "Anahtarı gir; modeller kendiliğinden getirilir. İstediğin kadar model ekleyebilirsin.");
         let mut d = false;
@@ -826,7 +851,7 @@ impl AyarUyg {
 
     fn sohbetler(&mut self, ui: &mut Ui) {
         if let Some(c) = self.gor.clone() {
-            if dugme(ui, "‹ Sohbetler", false).clicked() { self.gor = None; return; }
+            if geri_dugmesi(ui, "Sohbetler").clicked() { self.gor = None; return; }
             ui.add_space(6.0);
             sayfa_basligi(ui, &c.baslik, &c.model.replace('|', " · "));
             let en = ui.available_width();
@@ -1008,6 +1033,27 @@ impl AyarUyg {
                 for m in &maddeler { ui.label(RichText::new(format!("•  {m}")).size(13.5).color(METIN_KREM)); }
             });
         }
+        let eskiler = giris_listesi(guncelleme::DEGISIKLIK);
+        if eskiler.len() > 1 {
+            kart(ui, |ui| {
+                baslik(ui, "Önceki sürümler");
+                for (h, maddeler) in eskiler.into_iter().skip(1) {
+                    let id = ui.make_persistent_id(("surum", &h));
+                    let mut st = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+                    let g = ui.painter().layout(h.clone(), FontId::proportional(14.5), KREM, (ui.available_width() - 40.0).max(60.0));
+                    let (r, y) = ui.allocate_exact_size(Vec2::new(ui.available_width(), g.size().y.max(20.0) + 14.0), Sense::click());
+                    let ac = st.openness(ui.ctx());
+                    ui.painter().galley(r.left_top() + Vec2::new(0.0, 7.0), g, KREM);
+                    ok_ciz(ui.painter(), r.right_center() - Vec2::new(8.0, 0.0), ac * std::f32::consts::FRAC_PI_2, SOLUK_KREM);
+                    if y.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { st.toggle(ui); st.store(ui.ctx()); }
+                    st.show_body_unindented(ui, |ui| {
+                        for m in &maddeler { ui.label(RichText::new(format!("•  {m}")).size(13.5).color(METIN_KREM)); }
+                        ui.add_space(6.0);
+                    });
+                    ui.painter().hline(r.x_range(), r.bottom(), Stroke::new(1.0, YUZEY_KENAR));
+                }
+            });
+        }
         if self.kur.veri.is_some() { std::process::exit(42); }
     }
 
@@ -1099,7 +1145,7 @@ impl eframe::App for AyarUyg {
                         for i in 0..KATEGORILER.len() { if self.kategori_karti(ui, i) { self.sayfa = i; self.ai_servis = None; self.gor = None; self.sayfa_acik = true; } }
                     });
                 } else {
-                    if dugme(ui, "‹ Geri", false).clicked() { self.sayfa_acik = false; }
+                    if geri_dugmesi(ui, "Geri").clicked() { self.sayfa_acik = false; }
                     ui.add_space(6.0);
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.sayfa_ciz(ui));
                 }
