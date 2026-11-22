@@ -17,6 +17,7 @@ pub struct Sohbet {
     pub model: String,
     pub ozet: String,
     pub kapsam: usize,
+    pub sessiz: bool,
     pub mesajlar: Vec<Mesaj>,
 }
 

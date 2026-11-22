@@ -63,8 +63,15 @@ pub fn kur(url: &str, ilerleme: std::sync::Arc<std::sync::atomic::AtomicU32>) ->
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let kok = exe.parent().ok_or("yol yok")?;
     let bat = d.join("guncelle.bat");
-    std::fs::write(&bat, format!("@echo off\r\ntimeout /t 2 /nobreak >nul\r\n:d\r\nxcopy /y /e \"{}\\*\" \"{}\\\" >nul 2>&1\r\nif errorlevel 1 (\r\ntimeout /t 1 /nobreak >nul\r\ngoto d\r\n)\r\nstart \"\" \"{}\"\r\n", d.join("yeni").display(), kok.display(), exe.display())).map_err(|e| e.to_string())?;
-    std::process::Command::new("cmd").args(["/C", "start", "", "/min", &bat.to_string_lossy()]).spawn().map_err(|e| e.to_string())?;
+    std::fs::write(&bat, format!("@echo off\r\ntimeout /t 2 /nobreak >nul\r\n:d\r\nxcopy /y /e \"{}\\*\" \"{}\\\" >nul 2>&1\r\nif errorlevel 1 (\r\ntimeout /t 1 /nobreak >nul\r\ngoto d\r\n)\r\nstart \"\" \"{}\"\r\nexit\r\n", d.join("yeni").display(), kok.display(), exe.display())).map_err(|e| e.to_string())?;
+    let mut k = std::process::Command::new("cmd");
+    k.args(["/C", &bat.to_string_lossy()]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        k.creation_flags(0x08000000); // pencere açma
+    }
+    k.spawn().map_err(|e| e.to_string())?;
     ilerleme.store(1000, Ordering::Relaxed);
     Ok(())
 }

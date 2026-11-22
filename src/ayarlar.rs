@@ -46,7 +46,19 @@ pub struct Ayar {
     pub ekstra_edit: Vec<String>,
     pub model_onbellek: std::collections::HashMap<String, Vec<String>>,
     pub mikrofon_kazanc: f32,
+    pub ks: std::collections::HashMap<String, String>,
+    pub ks_kapali: Vec<String>,
+    pub yeni_sohbet_sesli: bool,
 }
+
+/// (kimlik, ad, açıklama, varsayılan tuş)
+pub const KISAYOLLAR: [(&str, &str, &str, &str); 5] = [
+    ("dinle", "Dinlemeyi başlat", "Uyandırma kelimesi beklemeden dinlemeye geçer; tekrar basınca iptal eder.", "Ctrl+Alt+F9"),
+    ("iptal", "İsteği iptal et", "Cevap beklerken basınca istek gönderilmemiş sayılır; mesaj sohbette \"gönderilmedi\" diye kalır.", "Ctrl+Alt+F10"),
+    ("ses", "Bu sohbette sesi aç / kapat", "Bu sohbette sesli cevap üretimini keser; aynı tuşa tekrar basınca açılır.", "Ctrl+Alt+F11"),
+    ("model", "Model listesi", "Modelleri numaralı açar; numara yazarak seçersin.", "Ctrl+Alt+F7"),
+    ("sohbetler", "Eski sohbetler", "Sohbet listesini numaralı açar.", "Ctrl+Alt+F6"),
+];
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
@@ -95,6 +107,9 @@ impl Default for Ayar {
             ekstra_edit: vec![],
             model_onbellek: Default::default(),
             mikrofon_kazanc: 1.6,
+            ks: Default::default(),
+            ks_kapali: vec![],
+            yeni_sohbet_sesli: true,
         }
     }
 }
@@ -108,6 +123,20 @@ impl Ayar {
         }
         if a.kisayol == "Ctrl+Alt+E" { a.kisayol = "Ctrl+Alt+F9".into(); }
         a
+    }
+    pub fn ks_al(&self, i: usize) -> String {
+        if i == 0 { self.kisayol.clone() } else { self.ks.get(KISAYOLLAR[i].0).cloned().unwrap_or_else(|| KISAYOLLAR[i].3.to_string()) }
+    }
+    pub fn ks_yaz(&mut self, i: usize, v: String) {
+        if i == 0 { self.kisayol = v; } else { self.ks.insert(KISAYOLLAR[i].0.to_string(), v); }
+    }
+    pub fn ks_acik(&self, i: usize) -> bool {
+        if i == 0 { self.kisayol_acik } else { !self.ks_kapali.iter().any(|k| k == KISAYOLLAR[i].0) }
+    }
+    pub fn ks_acik_yaz(&mut self, i: usize, a: bool) {
+        if i == 0 { self.kisayol_acik = a; return; }
+        self.ks_kapali.retain(|k| k != KISAYOLLAR[i].0);
+        if !a { self.ks_kapali.push(KISAYOLLAR[i].0.to_string()); }
     }
     pub fn ekstra_hepsi(&self) -> Vec<String> {
         self.ekstra_hey.iter().chain(self.ekstra_edit.iter()).cloned().collect()

@@ -66,11 +66,11 @@ fn banner() {
 }
 
 enum Girdi {
-    Kisayol,
+    Kisayol(usize),
     Yeni(u32, String),
     GuncelBitti(Result<(), String>),
     Satir(String),
-    Ai(Olay),
+    Ai(u64, Olay),
     Din(DEvent),
     Kapat,
 }
@@ -101,6 +101,7 @@ struct T {
     kisayol_tid: Arc<AtomicU32>,
     guncel_sor: Option<(u32, String)>,
     guncelliyor: Option<Arc<AtomicU32>>,
+    nesil: u64,
 }
 
 fn ayar_komutu_mu(m: &str) -> bool {
@@ -125,14 +126,20 @@ impl T {
         self.aktif.model.split_once('|').map(|(s, m)| format!("{} · {}", servis_adi(s), m)).unwrap_or_else(|| "model yok".into())
     }
 
+    fn taze(&self) -> Sohbet {
+        let mut c = Sohbet::yeni(self.ayar.varsayilan_model());
+        c.sessiz = !self.ayar.yeni_sohbet_sesli;
+        c
+    }
+
     fn yeni(&mut self) {
-        self.aktif = Sohbet::yeni(self.ayar.varsayilan_model());
+        self.aktif = self.taze();
         self.ekrani_temizle();
         println!("  {GRI}Yeni sohbet · {}{SIFIRLA}\n", self.model_adi());
     }
 
     fn yardim(&self) {
-        yaz(&format!("{SIL}{GRI}  /ayarlar         ayarlar penceresini açar\n  /model           modelleri numaralı listeler\n  /history_chat    eski sohbetleri numaralı listeler\n  /yeni            yeni sohbet\n  /yardim          bu liste\n  /cikis           kapatır\n  sesle: \"hey edit\" / \"edit\" deyip konuş{SIFIRLA}\n"));
+        yaz(&format!("{SIL}{GRI}  /ayarlar         ayarlar penceresini açar\n  /model           modelleri numaralı listeler\n  /history_chat    eski sohbetleri numaralı listeler\n  /yeni            yeni sohbet\n  /yardim          bu liste\n  kısayollar       Ayarlar > Kısayollar\n  /cikis           kapatır\n  sesle: \"hey edit\" / \"edit\" deyip konuş{SIFIRLA}\n"));
     }
 
     fn ekrani_temizle(&self) {
@@ -156,13 +163,53 @@ impl T {
         {
             let eski = self.kisayol_tid.swap(0, Ordering::SeqCst);
             if eski != 0 { unsafe { kisayol::PostThreadMessageW(eski, 0x0012, 0, 0); } }
-            if self.ayar.kisayol_acik {
-                kisayol::baslat(&self.ayar.kisayol, self.gtx.clone(), self.kisayol_tid.clone());
-            }
+            let liste: Vec<(i32, String)> = (0..crate::ayarlar::KISAYOLLAR.len()).filter(|&i| self.ayar.ks_acik(i)).map(|i| (i as i32 + 1, self.ayar.ks_al(i))).collect();
+            if !liste.is_empty() { kisayol::baslat(liste, self.gtx.clone(), self.kisayol_tid.clone()); }
         }
     }
 
-    fn kisayol_basildi(&mut self) {
+    fn kisayol_basildi(&mut self, id: usize) {
+        match id {
+            0 => self.dinle_degistir(),
+            1 => self.iptal(),
+            2 => self.ses_degistir(),
+            3 | 4 => {
+                if self.mesgul || self.dinliyor { return; }
+                if id == 3 { self.model_listele() } else { self.sohbet_listele() }
+                self.istem();
+            }
+            _ => {}
+        }
+    }
+
+    fn iptal(&mut self) {
+        self.oynatici.kes();
+        if !self.mesgul { return; }
+        self.nesil += 1;
+        self.mesgul = false;
+        self.akan.clear();
+        self.arac.clear();
+        self.sesli = false;
+        self.sonra_dinle = false;
+        self.kuyruk.clear();
+        if let Some(i) = self.aktif.mesajlar.iter().rposition(|m| m.k == "k") {
+            let m = self.aktif.mesajlar.remove(i);
+            self.aktif.mesajlar.push(Mesaj { k: "n".into(), m: format!("› {}  (gönderilmedi)", m.m) });
+            self.aktif.kaydet();
+        }
+        yaz(&format!("{SIL}{GRI}  ↳ gönderilmedi{SIFIRLA}\n\n"));
+        self.istem();
+    }
+
+    fn ses_degistir(&mut self) {
+        self.aktif.sessiz = !self.aktif.sessiz;
+        if self.aktif.sessiz { self.oynatici.kes(); }
+        if !self.aktif.mesajlar.is_empty() { self.aktif.yaz(); }
+        self.not(if self.aktif.sessiz { "Bu sohbette sesli cevap kapalı." } else { "Bu sohbette sesli cevap açık." });
+        self.istem();
+    }
+
+    fn dinle_degistir(&mut self) {
         let Some(d) = &self.dinleyici else { self.not("Dinleme kapalı, kısayol çalışmaz."); self.istem(); return };
         if self.dinliyor {
             let _ = d.komut.send(DKomut::Bekle);
@@ -204,7 +251,7 @@ impl T {
         if !self.aktif.mesajlar.is_empty() {
             match std::fs::read_to_string(&yol).ok().and_then(|s| serde_json::from_str::<Sohbet>(&s).ok()) {
                 Some(d) => { self.aktif.baslik = d.baslik; }
-                None => { self.aktif = Sohbet::yeni(self.ayar.varsayilan_model()); }
+                None => { self.aktif = self.taze(); }
             }
         }
         if !self.ayar.secenekler().contains(&self.aktif.model) && self.aktif.mesajlar.is_empty() { self.aktif.model = self.ayar.varsayilan_model(); }
@@ -351,8 +398,10 @@ impl T {
         let anahtar = self.ayar.anahtar(&servis).to_string();
         let (tx, rx) = channel();
         let gtx = self.gtx.clone();
+        self.nesil += 1;
+        let n = self.nesil;
         std::thread::spawn(move || {
-            for o in rx { if gtx.send(Girdi::Ai(o)).is_err() { break; } }
+            for o in rx { if gtx.send(Girdi::Ai(n, o)).is_err() { break; } }
         });
         let araclar = self.araclar.clone();
         let kapali: Vec<Vec<String>> = self.ayar.mcp.iter().map(|m| m.kapali.clone()).collect();
@@ -390,7 +439,7 @@ impl T {
                 if self.aktif.baslik == "Yeni sohbet" && !b.is_empty() { self.aktif.baslik = b; }
             }
             println!("{TURUNCU}{temiz}{SIFIRLA}\n");
-            if !self.ayar.ses_sadece_sesli || self.sesli { self.oynatici.konus(&temiz, &self.ayar); }
+            if (!self.ayar.ses_sadece_sesli || self.sesli) && !self.aktif.sessiz { self.oynatici.konus(&temiz, &self.ayar); }
             self.aktif.mesajlar.push(Mesaj { k: "a".into(), m: temiz });
         }
         self.aktif.kaydet();
@@ -431,7 +480,7 @@ impl T {
         if let Some(il) = &self.guncelliyor {
             let b = il.load(Ordering::Relaxed);
             let dolu = (b as usize * 30) / 1000;
-            yaz(&format!("{SIL}  {YESIL}{}{GRI}{}{SIFIRLA} %{}  güncelleme indiriliyor", "█".repeat(dolu), "░".repeat(30 - dolu), b / 10));
+            yaz(&format!("{SIL}  {TURUNCU}{}{GRI}{}{SIFIRLA} %{}  güncelleme indiriliyor", "█".repeat(dolu), "░".repeat(30 - dolu), b / 10));
             return;
         }
         if self.mesgul && self.akan.is_empty() {
@@ -461,7 +510,7 @@ fn kurulum_yap() {
     loop {
         let b = il.binde.load(std::sync::atomic::Ordering::Relaxed);
         let dolu = (b as usize * 30) / 1000;
-        yaz(&format!("{SIL}  {YESIL}{}{GRI}{}{SIFIRLA} %{}", "█".repeat(dolu), "░".repeat(30 - dolu), b / 10));
+        yaz(&format!("{SIL}  {TURUNCU}{}{GRI}{}{SIFIRLA} %{}", "█".repeat(dolu), "░".repeat(30 - dolu), b / 10));
         if il.bitti.load(std::sync::atomic::Ordering::Relaxed) { println!("\n"); break; }
         let h = il.hata.lock().unwrap().clone();
         if !h.is_empty() { println!("\n  {KIRMIZI}{h}{SIFIRLA}\n  {GRI}Sesli dinleme olmadan devam ediliyor.{SIFIRLA}\n"); break; }
@@ -512,19 +561,21 @@ mod kisayol {
         if vk == 0 { None } else { Some((mods, vk)) }
     }
 
-    pub fn baslat(spec: &str, gtx: Sender<Girdi>, tid: Arc<AtomicU32>) {
-        let Some((mods, vk)) = coz(spec) else { return };
+    pub fn baslat(liste: Vec<(i32, String)>, gtx: Sender<Girdi>, tid: Arc<AtomicU32>) {
         std::thread::spawn(move || unsafe {
             tid.store(GetCurrentThreadId(), Ordering::SeqCst);
-            if RegisterHotKey(0, 1, mods | 0x4000, vk) == 0 {
-                let _ = gtx.send(Girdi::Satir("\u{1}kisayolhata".into()));
-                return;
+            let mut kayitli = vec![];
+            for (id, spec) in &liste {
+                let Some((mods, vk)) = coz(spec) else { continue };
+                if RegisterHotKey(0, *id, mods | 0x4000, vk) == 0 {
+                    let _ = gtx.send(Girdi::Satir(format!("\u{1}kisayolhata:{spec}")));
+                } else { kayitli.push(*id); }
             }
             let mut m = Msg::default();
             while GetMessageW(&mut m, 0, 0, 0) > 0 {
-                if m.message == 0x0312 { let _ = gtx.send(Girdi::Kisayol); }
+                if m.message == 0x0312 { let _ = gtx.send(Girdi::Kisayol(m.wparam.saturating_sub(1))); }
             }
-            UnregisterHotKey(0, 1);
+            for id in kayitli { UnregisterHotKey(0, id); }
         });
     }
 }
@@ -546,8 +597,9 @@ pub fn calistir() {
     } else { None };
     let mut t = T {
         aktif: Sohbet::yeni(ayar.varsayilan_model()), ayar, gtx: gtx.clone(), araclar, oynatici, dinleyici, liste: None, mesgul: false, akan: String::new(), arac: String::new(),
-        hata: false, sesli: false, sonra_dinle: false, dinliyor: false, kare: 0, kuyruk: VecDeque::new(), cocuk: None, kisayol_tid: Arc::new(AtomicU32::new(0)), guncel_sor: None, guncelliyor: None,
+        hata: false, sesli: false, sonra_dinle: false, dinliyor: false, kare: 0, kuyruk: VecDeque::new(), cocuk: None, kisayol_tid: Arc::new(AtomicU32::new(0)), guncel_sor: None, guncelliyor: None, nesil: 0,
     };
+    t.aktif.sessiz = !t.ayar.yeni_sohbet_sesli;
     // Dinleyici olaylarını ana döngüye ilet.
     if let Some(d) = t.dinleyici.take() {
         let (komut, olay) = (d.komut, d.olay);
@@ -577,12 +629,12 @@ pub fn calistir() {
     loop {
         match grx.recv_timeout(Duration::from_millis(100)) {
             Ok(Girdi::Satir(s)) => {
-                if s == "\u{1}kisayolhata" {
-                    t.not("Kısayol tuşu başka bir uygulamada kullanılıyor; Ayarlar > Uyandırma'dan değiştir.");
+                if let Some(tus) = s.strip_prefix("\u{1}kisayolhata:") {
+                    t.not(&format!("{tus} başka bir uygulamada kullanılıyor; Ayarlar > Kısayollar'dan değiştir."));
                     t.istem();
                 } else { t.satir(&s); }
             }
-            Ok(Girdi::Kisayol) => t.kisayol_basildi(),
+            Ok(Girdi::Kisayol(id)) => t.kisayol_basildi(id),
             Ok(Girdi::Yeni(n, url)) => {
                 t.guncel_sor = Some((n, url));
                 t.not(&format!("Yeni sürüm var (0.4.{n}). Güncellensin mi? (E/H)"));
@@ -592,7 +644,7 @@ pub fn calistir() {
                 Ok(()) => { yaz(&format!("{SIL}  {GRI}Güncelleme hazır, yeniden başlatılıyor…{SIFIRLA}\n")); std::process::exit(0); }
                 Err(e) => { t.guncelliyor = None; t.not(&format!("Güncelleme başarısız: {e}")); t.istem(); }
             },
-            Ok(Girdi::Ai(o)) => t.ai_olay(o),
+            Ok(Girdi::Ai(n, o)) => { if n == t.nesil { t.ai_olay(o) } }
             Ok(Girdi::Din(e)) => t.dinle_olay(e),
             Ok(Girdi::Kapat) => break,
             Err(RecvTimeoutError::Timeout) => t.tik(),

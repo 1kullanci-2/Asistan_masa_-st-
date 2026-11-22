@@ -12,15 +12,16 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-const KATEGORILER: [(&str, &str); 8] = [
+const KATEGORILER: [(&str, &str); 9] = [
     ("Yapay zeka", "Servisler, anahtarlar, modeller"),
     ("Ses", "Sesler, motor sırası, ElevenLabs"),
     ("Uyandırma", "Kelimeler, öğrenme, davranış"),
+    ("Kısayollar", "Genel tuşlar: dinle, iptal, ses"),
     ("Mikrofon", "Test, takip süresi, modeller"),
     ("Bağlantılar", "MCP sunucuları ve araçlar"),
     ("Sohbetler", "İsim düzenle, sil"),
     ("İzinler", "Mikrofon ve erişim"),
-    ("Hakkında", "Sürüm, güncelleme, değişiklikler"),
+    ("Hakkında", "Sürüm ve güncelleme"),
 ];
 
 // ---------- küçük bileşenler ----------
@@ -143,6 +144,12 @@ fn kategori_ikonu(p: &egui::Painter, i: usize, c: egui::Pos2) {
             return;
         }
         3 => {
+            p.rect_stroke(egui::Rect::from_center_size(c, Vec2::new(20.0, 13.0)), Rounding::same(3.5), s);
+            for x in [-6.0f32, -2.0, 2.0, 6.0] { p.circle_filled(n(x, -2.5), 1.0, KREM); }
+            p.line_segment([n(-5.0, 3.0), n(5.0, 3.0)], s);
+            return;
+        }
+        4 => {
             p.rect_stroke(egui::Rect::from_center_size(n(0.0, -3.0), Vec2::new(8.0, 13.0)), Rounding::same(4.0), s);
             p.line_segment([n(-6.0, 1.0), n(-6.0, 3.0)], s);
             p.line_segment([n(6.0, 1.0), n(6.0, 3.0)], s);
@@ -150,18 +157,18 @@ fn kategori_ikonu(p: &egui::Painter, i: usize, c: egui::Pos2) {
             p.line_segment([n(0.0, 3.0), n(0.0, 9.0)], s);
             return;
         }
-        4 => {
+        5 => {
             p.circle_stroke(n(-4.0, 0.0), 6.0, s);
             p.circle_stroke(n(4.0, 0.0), 6.0, s);
             return;
         }
-        5 => {
+        6 => {
             p.rect_stroke(egui::Rect::from_center_size(n(0.0, -1.0), Vec2::new(19.0, 14.0)), Rounding::same(5.0), s);
             p.line_segment([n(-5.0, -3.0), n(5.0, -3.0)], s);
             p.line_segment([n(-5.0, 1.0), n(2.0, 1.0)], s);
             return;
         }
-        6 => {
+        7 => {
             p.rect_stroke(egui::Rect::from_center_size(c, Vec2::new(16.0, 16.0)), Rounding::same(5.0), s);
             p.line_segment([n(-4.0, 0.0), n(-1.0, 3.5)], s);
             p.line_segment([n(-1.0, 3.5), n(5.0, -3.5)], s);
@@ -244,7 +251,8 @@ pub struct AyarUyg {
     dene: HashMap<String, Getir<String>>,
     ai_not: String,
     ogren_hedef: usize,
-    ks_yakala: bool,
+    ks_hedef: Option<usize>,
+    dgs_basladi: bool,
     ks_aday: String,
     ks_not: String,
     gor: Option<depo::Sohbet>,
@@ -252,6 +260,20 @@ pub struct AyarUyg {
     kontrol_basladi: bool,
     dgs: Getir<String>,
     mg_basladi: [bool; 4],
+}
+
+/// Değişiklik metnindeki ilk (en güncel) sürüm girişi.
+fn ilk_giris(metin: &str) -> Option<(String, Vec<String>)> {
+    let mut g: Option<(String, Vec<String>)> = None;
+    for satir in metin.lines() {
+        if let Some(h) = satir.strip_prefix("## ") {
+            if g.is_some() { break; }
+            g = Some((h.to_string(), vec![]));
+        } else if let Some(m) = satir.strip_prefix("- ") {
+            if let Some(x) = g.as_mut() { x.1.push(m.to_string()); }
+        }
+    }
+    g
 }
 
 fn tus_adi(k: egui::Key) -> Option<String> {
@@ -277,7 +299,7 @@ impl AyarUyg {
             sohbetler: depo::hepsi(), ad_duzen: None, sil_onay: None, dinleyici: None, dinleyici_denendi: false, dinle_hata: String::new(), dinle_hazir: false,
             seviye: 0.0, test_acik: false, test_en: String::new(), test_tr: String::new(), ogren_acik: false, ogren_n: 0, kurulum: None,
             kontrol: Getir::yeni(), kur: Getir::yeni(), ctx: ctx.clone(), ai_servis: None, mgetir: (0..4).map(|_| Getir::yeni()).collect(), dene: HashMap::new(), ai_not: String::new(),
-            ogren_hedef: 0, ks_yakala: false, ks_aday: String::new(), ks_not: String::new(), gor: None, kur_il: Arc::new(AtomicU32::new(0)), kontrol_basladi: false, dgs: Getir::yeni(), mg_basladi: [false; 4],
+            ogren_hedef: 0, ks_hedef: None, dgs_basladi: false, ks_aday: String::new(), ks_not: String::new(), gor: None, kur_il: Arc::new(AtomicU32::new(0)), kontrol_basladi: false, dgs: Getir::yeni(), mg_basladi: [false; 4],
         }
     }
 
@@ -417,6 +439,7 @@ impl AyarUyg {
             }
         });
         kart(ui, |ui| {
+            ui.set_min_height(300.0);
             ui.horizontal(|ui| {
                 baslik(ui, "Kullanılabilir modeller");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -546,6 +569,7 @@ impl AyarUyg {
             ui.add_space(6.0);
             d |= satir_anahtar(ui, "Sırayla dene", "Bir motor çalışmazsa sıradakine geç.", &mut self.ayar.ses_sirayla);
             d |= satir_anahtar(ui, "Sadece sesli komutlarda sesli cevap ver", "Yazılı mesajlarda ses üretilmez, kota korunur.", &mut self.ayar.ses_sadece_sesli);
+            d |= satir_anahtar(ui, "Yeni sohbetlerde sesli cevap açık olsun", "Kapalıysa her yeni sohbet sessiz başlar; kısayolla sohbet başına açılır.", &mut self.ayar.yeni_sohbet_sesli);
         });
         if d { self.kaydet(); }
     }
@@ -604,29 +628,8 @@ impl AyarUyg {
         });
         kart(ui, |ui| {
             baslik(ui, "Kısayol");
-            d |= satir_anahtar(ui, "Kısayolla dinle", "Bu tuşa basınca uyandırma kelimesi beklemeden dinlemeye geçer. Terminal açıkken her yerde çalışır; tekrar basınca iptal eder.", &mut self.ayar.kisayol_acik);
-            ui.horizontal_wrapped(|ui| {
-                for k in ["Ctrl+Alt+F9", "Ctrl+Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+M"] {
-                    if ui.selectable_label(self.ayar.kisayol == k && !self.ks_yakala, k).clicked() { self.ayar.kisayol = k.to_string(); self.ks_yakala = false; d = true; }
-                }
-                if ui.selectable_label(self.ks_yakala, "Özel").clicked() { self.ks_yakala = true; self.ks_aday.clear(); self.ks_not.clear(); }
-                if dugme(ui, "Sıfırla", false).clicked() { self.ayar.kisayol = "Ctrl+Alt+F9".into(); self.ks_yakala = false; d = true; }
-            });
-            alt_yazi(ui, &format!("Şu an: {}", self.ayar.kisayol));
-            if self.ks_yakala {
-                ui.add_space(4.0);
-                egui::Frame::none().fill(VISNE_KOYU).stroke(Stroke::new(1.0, KREM)).rounding(Rounding::same(14.0)).inner_margin(Margin::symmetric(14.0, 10.0)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(if self.ks_aday.is_empty() { "Tuş kombinasyonuna bas…".to_string() } else { self.ks_aday.clone() }).font(FontId::new(18.0, serif())));
-                    if !self.ks_not.is_empty() { alt_yazi(ui, &self.ks_not.clone()); }
-                });
-                ui.horizontal(|ui| {
-                    if !self.ks_aday.is_empty() && dugme(ui, "Kaydet", true).clicked() { self.ayar.kisayol = self.ks_aday.clone(); self.ks_yakala = false; d = true; }
-                    if dugme(ui, "Vazgeç", false).clicked() { self.ks_yakala = false; }
-                });
-                alt_yazi(ui, "Ctrl, Alt veya Shift ile bir harf, rakam, F tuşu ya da Boşluk bas. Algılanıyorsa kısayol olarak da çalışır.");
-            }
-            alt_yazi(ui, "Değişiklik ayarlar kapanınca geçerli olur. Başka bir uygulama o tuşu kullanıyorsa terminal uyarır.");
+            d |= self.kisayol_satiri(ui, 0);
+            alt_yazi(ui, "Diğer kısayollar için Kısayollar sekmesine bak.");
         });
         kart(ui, |ui| {
             d |= satir_anahtar(ui, "Cümle başında olsun", "Kelime yalnızca cümlenin başında duyulursa uyan.", &mut self.ayar.cumle_basi);
@@ -634,6 +637,50 @@ impl AyarUyg {
             d |= satir_anahtar(ui, "Hoparlör modu", "Asistan konuşurken yalnızca tam algılanan kelimeyle uyan (yankıyı azaltır).", &mut self.ayar.hoparlor_modu);
         });
         if d { self.kaydet(); }
+    }
+
+    fn kisayollar(&mut self, ui: &mut Ui) {
+        sayfa_basligi(ui, "Kısayollar", "Terminal açıkken her yerde çalışan genel tuşlar. Hepsi değiştirilebilir.");
+        let mut d = false;
+        kart(ui, |ui| {
+            for i in 0..crate::ayarlar::KISAYOLLAR.len() {
+                d |= self.kisayol_satiri(ui, i);
+                if i + 1 < crate::ayarlar::KISAYOLLAR.len() { ui.add_space(4.0); ui.separator(); ui.add_space(4.0); }
+            }
+            ui.add_space(4.0);
+            alt_yazi(ui, "Değişiklik ayarlar kapanınca geçerli olur. Başka bir uygulama aynı tuşu kullanıyorsa terminal uyarır.");
+        });
+        if d { self.kaydet(); }
+    }
+
+    fn kisayol_satiri(&mut self, ui: &mut Ui, i: usize) -> bool {
+        let (_, ad, acik, varsayilan) = crate::ayarlar::KISAYOLLAR[i];
+        let mut d = false;
+        let mut a = self.ayar.ks_acik(i);
+        if satir_anahtar(ui, ad, acik, &mut a) { self.ayar.ks_acik_yaz(i, a); d = true; }
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(self.ayar.ks_al(i)).font(FontId::new(17.0, serif())).color(KREM));
+            if dugme(ui, "Değiştir", false).clicked() { self.ks_hedef = Some(i); self.ks_aday.clear(); self.ks_not.clear(); }
+            if dugme(ui, "Sıfırla", false).clicked() { self.ayar.ks_yaz(i, varsayilan.to_string()); if self.ks_hedef == Some(i) { self.ks_hedef = None; } d = true; }
+        });
+        if self.ks_hedef == Some(i) {
+            egui::Frame::none().fill(VISNE_KOYU).stroke(Stroke::new(1.0, KREM)).rounding(Rounding::same(14.0)).inner_margin(Margin::symmetric(14.0, 10.0)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(if self.ks_aday.is_empty() { "Tuş kombinasyonuna bas…".to_string() } else { self.ks_aday.clone() }).font(FontId::new(18.0, serif())));
+                if !self.ks_not.is_empty() { alt_yazi(ui, &self.ks_not.clone()); }
+            });
+            ui.horizontal(|ui| {
+                if !self.ks_aday.is_empty() && dugme(ui, "Kaydet", true).clicked() {
+                    let aday = self.ks_aday.clone();
+                    let cakisan = (0..crate::ayarlar::KISAYOLLAR.len()).any(|k| k != i && self.ayar.ks_acik(k) && self.ayar.ks_al(k) == aday);
+                    if cakisan { self.ks_not = "Bu tuş başka bir kısayolda kullanılıyor.".into(); }
+                    else { self.ayar.ks_yaz(i, aday); self.ks_hedef = None; d = true; }
+                }
+                if dugme(ui, "Vazgeç", false).clicked() { self.ks_hedef = None; }
+            });
+            alt_yazi(ui, "Ctrl, Alt veya Shift ile bir harf, rakam, F tuşu ya da Boşluk bas.");
+        }
+        d
     }
 
     fn mikrofon(&mut self, ui: &mut Ui) {
@@ -898,18 +945,21 @@ impl AyarUyg {
         if !self.kontrol_basladi {
             self.kontrol_basladi = true;
             self.kontrol.baslat(&self.ctx, guncelleme::kontrol);
-            self.dgs.baslat(&self.ctx, guncelleme::degisiklik_cek);
         }
         self.kontrol.yokla();
         self.dgs.yokla();
         self.kur.yokla();
-        sayfa_basligi(ui, "Hakkında", "E.D.I.T.H. Windows sürümü");
+        let yeni = self.kontrol.veri.clone().flatten();
+        if yeni.is_some() && !self.dgs_basladi {
+            self.dgs_basladi = true;
+            self.dgs.baslat(&self.ctx, guncelleme::degisiklik_cek);
+        }
+        sayfa_basligi(ui, "Hakkında", "Sesli asistan · Windows sürümü");
         kart(ui, |ui| {
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
-                ui.painter().rect_filled(r, Rounding::same(14.0), KREM);
-                for (k, (x, h)) in [(0.0f32, 9.0f32), (1.0, 18.0), (2.0, 26.0), (3.0, 14.0), (4.0, 6.0)].iter().enumerate() {
-                    let _ = k;
+                ui.painter().rect_filled(r, Rounding::same(13.0), KREM);
+                for (x, h) in [(0.0f32, 9.0f32), (1.0, 18.0), (2.0, 26.0), (3.0, 14.0), (4.0, 6.0)] {
                     let cx = r.left() + 11.0 + x * 8.5;
                     ui.painter().line_segment([egui::pos2(cx, r.center().y - h / 2.0 - 1.0), egui::pos2(cx, r.center().y + h / 2.0 + 1.0)], Stroke::new(4.0, VURGU));
                 }
@@ -924,65 +974,40 @@ impl AyarUyg {
                 ui.label(RichText::new(&self.kontrol.hata).size(12.5).color(HATA_ACIK));
                 if dugme(ui, "Tekrar dene", false).clicked() { self.kontrol.baslat(&self.ctx, guncelleme::kontrol); }
             }
-            match self.kontrol.veri.clone() {
-                Some(Some((n, url))) => {
-                    ui.label(RichText::new(format!("Yeni sürüm var: 0.4.{n}")).font(FontId::new(18.0, serif())).color(YESIL_ACIK));
+            match yeni {
+                Some((n, url)) => {
+                    ui.label(RichText::new(format!("Yeni sürüm var: 0.4.{n}")).font(FontId::new(18.0, serif())).color(KREM));
                     if !self.kur.bekliyor && dugme(ui, "İndir ve yükle", true).clicked() {
                         self.kur_il.store(0, Ordering::Relaxed);
                         let il = self.kur_il.clone();
                         self.kur.baslat(&self.ctx, move || guncelleme::kur(&url, il));
                     }
                 }
-                Some(None) => alt_yazi(ui, "Güncelsin, en son sürümü kullanıyorsun."),
+                None if self.kontrol.veri.is_some() => alt_yazi(ui, "Güncelsin, en son sürümü kullanıyorsun."),
                 None => {}
             }
             if self.kur.bekliyor {
                 let b = self.kur_il.load(Ordering::Relaxed) as f32 / 1000.0;
-                ui.add(egui::ProgressBar::new(b).fill(YESIL).desired_height(14.0).text(format!("İndiriliyor %{}", (b * 100.0) as u32)));
+                ui.add(egui::ProgressBar::new(b).fill(KREM).desired_height(10.0));
+                alt_yazi(ui, &format!("%{} · indiriliyor", (b * 100.0) as u32));
                 alt_yazi(ui, "İndirme bitince uygulama kapanıp yeni sürümle yeniden açılır.");
                 self.ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
             if !self.kur.hata.is_empty() { ui.label(RichText::new(&self.kur.hata).size(12.5).color(HATA_ACIK)); }
         });
-        kart(ui, |ui| {
-            baslik(ui, "Değişiklikler");
-            let metin = self.dgs.veri.clone().unwrap_or_else(|| guncelleme::DEGISIKLIK.to_string());
-            alt_yazi(ui, "Bir sürüme dokununca değişiklikleri açılır.");
-            ui.add_space(4.0);
-            let mevcut = guncelleme::surum_metni();
-            let mut girisler: Vec<(String, Vec<String>)> = vec![];
-            for satir in metin.lines() {
-                if let Some(h) = satir.strip_prefix("## ") { girisler.push((h.to_string(), vec![])); }
-                else if let Some(m) = satir.strip_prefix("- ") { if let Some(g) = girisler.last_mut() { g.1.push(m.to_string()); } }
-            }
-            for (h, maddeler) in girisler {
-                let id = ui.make_persistent_id(("surum", &h));
-                let mut st = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
-                egui::Frame::none().fill(VISNE_KOYU).stroke(Stroke::new(1.0, YUZEY_KENAR)).rounding(Rounding::same(14.0)).inner_margin(Margin::symmetric(14.0, 6.0)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    let galley = ui.painter().layout(h.clone(), FontId::new(16.0, serif()), KREM, (ui.available_width() - 90.0).max(60.0));
-                    let yuk = galley.size().y.max(22.0) + 12.0;
-                    let (r, y) = ui.allocate_exact_size(Vec2::new(ui.available_width(), yuk), Sense::click());
-                    let ac = st.openness(ui.ctx());
-                    ui.painter().galley(r.left_top() + Vec2::new(0.0, 6.0), galley, KREM);
-                    if h.starts_with(&mevcut) {
-                        ui.painter().text(r.right_center() - Vec2::new(30.0, 0.0), Align2::RIGHT_CENTER, "şu an", FontId::proportional(12.0), YESIL_ACIK);
-                    }
-                    let c = r.right_center() - Vec2::new(10.0, 0.0);
-                    let a = ac * std::f32::consts::FRAC_PI_2;
-                    let (sn, cs) = a.sin_cos();
-                    let nok: Vec<egui::Pos2> = [(-4.0f32, -5.0f32), (5.0, 0.0), (-4.0, 5.0)].iter().map(|(x, yy)| egui::pos2(c.x + x * cs - yy * sn, c.y + x * sn + yy * cs)).collect();
-                    ui.painter().add(egui::Shape::convex_polygon(nok, KREM, Stroke::NONE));
-                    if y.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { st.toggle(ui); st.store(ui.ctx()); }
-                    st.show_body_unindented(ui, |ui| {
-                        ui.add_space(2.0);
-                        for m in &maddeler { ui.label(RichText::new(format!("•  {m}")).size(13.5).color(METIN_KREM)); }
-                        ui.add_space(6.0);
-                    });
-                });
-                ui.add_space(8.0);
-            }
-        });
+        let mut kartlar = vec![];
+        if let (Some((n, _)), Some(m)) = (self.kontrol.veri.clone().flatten(), &self.dgs.veri) {
+            if let Some(g) = ilk_giris(m) { kartlar.push((format!("Yeni sürümde (0.4.{n})"), g)); }
+        }
+        if let Some(g) = ilk_giris(guncelleme::DEGISIKLIK) { kartlar.push(("Bu sürümde".to_string(), g)); }
+        for (ust, (h, maddeler)) in kartlar {
+            kart(ui, |ui| {
+                baslik(ui, &ust);
+                ui.label(RichText::new(h).font(FontId::new(16.0, serif())).color(KREM));
+                ui.add_space(4.0);
+                for m in &maddeler { ui.label(RichText::new(format!("•  {m}")).size(13.5).color(METIN_KREM)); }
+            });
+        }
         if self.kur.veri.is_some() { std::process::exit(42); }
     }
 
@@ -1009,10 +1034,11 @@ impl AyarUyg {
             0 => self.yapay_zeka(ui),
             1 => self.ses(ui),
             2 => self.uyandirma(ui),
-            3 => self.mikrofon(ui),
-            4 => self.baglantilar(ui),
-            5 => self.sohbetler(ui),
-            6 => self.izinler(ui),
+            3 => self.kisayollar(ui),
+            4 => self.mikrofon(ui),
+            5 => self.baglantilar(ui),
+            6 => self.sohbetler(ui),
+            7 => self.izinler(ui),
             _ => self.hakkinda(ui),
         }
     }
@@ -1025,7 +1051,7 @@ impl eframe::App for AyarUyg {
 
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.olaylar();
-        if self.ks_yakala {
+        if self.ks_hedef.is_some() {
             let ev = ctx.input(|i| i.events.clone());
             for e in ev {
                 if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
